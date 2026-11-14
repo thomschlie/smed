@@ -1,0 +1,15 @@
+# smed as a systemd user service: one daemon per logged-in user, in that user's session.
+# Install to ~/.config/systemd/user/ (or /usr/lib/systemd/user/ from a package), then
+#   systemctl --user enable --now smed
+# Device access comes from the udev rule dist/70-smed.rules (TAG+="uaccess" on 256f:c633).
+[Unit]
+Description=smed, SpaceMouse Enterprise driver daemon
+Documentation=https://github.com/thomschlie/smed
+
+[Service]
+ExecStart=/usr/bin/smed
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

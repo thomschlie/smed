@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/smed", "crates/smed-client", "crates/smectl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thomschlie/smed"
+rust-version = "1.88"
+
+[workspace.dependencies]
+smed-client = { path = "crates/smed-client", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
