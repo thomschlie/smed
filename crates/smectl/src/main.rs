@@ -16,7 +16,7 @@ commands:\n\
   lock on|off    switch the rotation lock\n\
   lcd [--brightness 0-100] [--text-size small|large] [--theme dark|light]\n\
                  print the LCD settings, or change them until smed restarts\n\
-  demo-page      show a demo page on the LCD until interrupted\n\
+  demo-page      show a demo page on the LCD until interrupted; key 11 switches it\n\
   screenshot FILE.png\n\
                  save what smed draws on the LCD now (works without the device)";
 
@@ -98,10 +98,24 @@ fn run() -> Result<(), String> {
             for message in demo::messages() {
                 client.send(&message).map_err(|e| e.to_string())?;
             }
-            eprintln!("smectl: demo page sent; it stays while smectl runs (Ctrl-C ends it)");
+            eprintln!(
+                "smectl: demo page sent; key 11 switches the environment; it stays while \
+                 smectl runs (Ctrl-C ends it)"
+            );
             loop {
                 match client.next_message().map_err(|e| e.to_string())? {
-                    Some(message) => print!("{}", to_line(&message)),
+                    Some(message) => {
+                        print!("{}", to_line(&message));
+                        // The callback: key 11's command switches the environment.
+                        if let ServerMessage::Command { id, env, .. } = &message
+                            && id == demo::SWITCH
+                        {
+                            let other = demo::other_environment(env);
+                            client
+                                .send(&ClientMessage::SetEnvironment { id: other.into() })
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
                     None => return Err("smed closed the connection".into()),
                 }
             }

@@ -7,9 +7,9 @@ the LCD with labels and icons from the application in use.
 > **Status: early (0.2, in development).** smed reads the device and reports all of it to
 > clients over its own API: the six axes, all 31 keys by their 3Dconnexion IDs with short and
 > long press, and the rotation lock with its LED. It draws the LCD from the labels and icons
-> the focused client sends (API 2). Not yet: the command callback, the spacenavd socket for
-> unchanged clients (Blender, FreeCAD), keyboard keys as real key presses, window-focus
-> detection.
+> the focused client sends and calls it back with the command of a key (API 2). Not yet: the
+> spacenavd socket for unchanged clients (Blender, FreeCAD), keyboard keys as real key
+> presses, window-focus detection.
 
 Not affiliated with or endorsed by 3Dconnexion. "3Dconnexion" and "SpaceMouse" are trademarks
 of their owner and are used here only to name the hardware.
@@ -32,7 +32,8 @@ Long presses (HID report `0x1d`), the rotation-lock LED and the LCD are not hand
     rotation is zeroed while it is on. Clients can switch it too.
 - Draws the LCD (API 2): the client whose window has the focus sends its application name,
   a catalogue of commands with labels and SVG or PNG icons, and which command each of the
-  keys 1–12 runs per environment; smed shows them as 12 tiles over the keys. Brightness,
+  keys 1–12 runs per environment; smed shows them as 12 tiles over the keys and sends the
+  client the command when such a key is pressed. Brightness,
   text size and a dark or light theme are smed's settings.
 - Attaches no meaning to keys: what a key does is the application's choice.
 
@@ -93,12 +94,10 @@ smed and spacenavd should not both run: stop spacenavd while smed is in use
 
 ## Plans
 
-1. The command callback: smed tells the focused application which command a key runs, and
-   switching between its environments.
-2. The spacenavd/libspnav socket with 3Dconnexion button IDs, so Blender and FreeCAD work
+1. The spacenavd/libspnav socket with 3Dconnexion button IDs, so Blender and FreeCAD work
    unchanged; window-focus detection; keyboard keys (Esc, Ctrl, …) as real key presses for
    the focused window.
-3. An on-screen display, radial menus, macros, a settings tool with your own key assignments.
+2. An on-screen display, radial menus, macros, a settings tool with your own key assignments.
 
 ## Licence
 
