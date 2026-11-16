@@ -71,6 +71,8 @@ impl HidDevice for Hidraw {
 pub struct Found {
     pub node: PathBuf,
     pub info: DeviceInfo,
+    /// The USB device's sysfs directory (for the LCD interface), if it could be resolved.
+    pub usb: Option<PathBuf>,
 }
 
 /// The first SpaceMouse Enterprise under `/sys/class/hidraw`.
@@ -86,14 +88,18 @@ pub fn find_in(class: &Path, dev: &Path) -> Option<Found> {
         let sys = entry.path();
         let uevent = std::fs::read_to_string(sys.join("device/uevent")).ok()?;
         let (vid, pid, name) = parse_uevent(&uevent)?;
-        (vid == VID && pid == PID).then(|| Found {
-            node: dev.join(entry.file_name()),
-            info: DeviceInfo {
-                vid,
-                pid,
-                name,
-                firmware: firmware(&sys),
-            },
+        (vid == VID && pid == PID).then(|| {
+            let usb = usb_device(&sys);
+            Found {
+                node: dev.join(entry.file_name()),
+                info: DeviceInfo {
+                    vid,
+                    pid,
+                    name,
+                    firmware: usb.as_deref().and_then(firmware),
+                },
+                usb,
+            }
         })
     })
 }
@@ -116,11 +122,15 @@ fn parse_uevent(uevent: &str) -> Option<(u16, u16, String)> {
     Some((vid, pid, name))
 }
 
-/// The firmware version from the USB device's bcdDevice: hidrawN/device is the HID device, its
-/// parent the USB interface, and that one's parent the USB device.
-fn firmware(sys: &Path) -> Option<String> {
+/// The USB device's sysfs directory: hidrawN/device is the HID device, its parent the USB
+/// interface, and that one's parent the USB device.
+fn usb_device(sys: &Path) -> Option<PathBuf> {
     let hid = std::fs::canonicalize(sys.join("device")).ok()?;
-    let usb = hid.parent()?.parent()?;
+    Some(hid.parent()?.parent()?.to_path_buf())
+}
+
+/// The firmware version from the USB device's bcdDevice.
+fn firmware(usb: &Path) -> Option<String> {
     format_bcd(std::fs::read_to_string(usb.join("bcdDevice")).ok()?.trim())
 }
 
@@ -243,6 +253,11 @@ mod tests {
         assert_eq!(found.node, Path::new("/dev/hidraw1"));
         assert_eq!(found.info.name, "SpaceMouse Enterprise");
         assert_eq!(found.info.firmware.as_deref(), Some("4.42"));
+        assert_eq!(
+            found.usb,
+            Some(std::fs::canonicalize(&usb).unwrap()),
+            "the USB device, for the LCD"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

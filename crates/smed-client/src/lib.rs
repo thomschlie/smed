@@ -16,6 +16,7 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// The highest API version this crate speaks.
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
+
+/// The largest message smed accepts, in bytes (one line, icons included).
+pub const MAX_MESSAGE: usize = 256 * 1024;
 
 /// The socket's path below `$XDG_RUNTIME_DIR`.
 pub const SOCKET_IN_RUNTIME_DIR: &str = "smed/api.sock";
@@ -54,6 +58,53 @@ pub enum Press {
     Long,
 }
 
+/// Text size on the LCD.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSize {
+    #[default]
+    Small,
+    Large,
+}
+
+/// Colour theme of the LCD.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// The application as shown in the LCD's header (`set_commands`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct App {
+    pub name: String,
+    /// An icon `id` from `set_icon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+/// One command of the client's catalogue (`set_commands`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Command {
+    pub id: String,
+    pub label: String,
+    /// An icon `id` from `set_icon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+/// One environment of the client (`set_environments`): a name and which command each key
+/// runs there, by key name (`"1"`–`"12"`) and command `id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Environment {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub keys: BTreeMap<String, String>,
+}
+
 /// What smed sends.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -65,6 +116,9 @@ pub enum ServerMessage {
     State {
         device: Option<DeviceInfo>,
         lock: bool,
+        /// API 2: whether smed can draw on the LCD. Absent with API 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lcd: Option<bool>,
     },
     Device {
         device: Option<DeviceInfo>,
@@ -82,6 +136,13 @@ pub enum ServerMessage {
     },
     Lock {
         on: bool,
+    },
+    /// API 2: whether this connection has the LCD, and the LCD settings.
+    Lcd {
+        owner: bool,
+        brightness: u8,
+        text_size: TextSize,
+        theme: Theme,
     },
     Error {
         message: String,
@@ -103,6 +164,37 @@ pub enum ClientMessage {
         on: bool,
     },
     GetState,
+    /// API 2: an icon for tiles and the header, kept per connection under `id`. One of `svg`
+    /// (SVG source) and `png` (base64).
+    SetIcon {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        svg: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        png: Option<String>,
+    },
+    /// API 2: the application and its command catalogue; replaces the previous one.
+    SetCommands {
+        app: App,
+        commands: Vec<Command>,
+    },
+    /// API 2: the environments with their key assignments; replaces the previous ones.
+    SetEnvironments {
+        environments: Vec<Environment>,
+    },
+    /// API 2: this client's window got (`true`) or lost (`false`) the input focus.
+    Focus {
+        on: bool,
+    },
+    /// API 2: change the LCD settings (for every client) until smed restarts.
+    SetLcd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        brightness: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_size: Option<TextSize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<Theme>,
+    },
     /// A message type smed does not know (from a newer client); smed ignores it.
     #[serde(other)]
     Unknown,
@@ -229,6 +321,12 @@ impl Client {
         self.send(&ClientMessage::GetState)
     }
 
+    /// Tells smed whether this client's window has the input focus (API 2): the focused
+    /// client has the LCD.
+    pub fn focus(&mut self, on: bool) -> io::Result<()> {
+        self.send(&ClientMessage::Focus { on })
+    }
+
     /// The next message, blocking; `None` once smed closed the connection. Unknown message
     /// types are skipped; a line that is not valid JSON is an error.
     pub fn next_message(&mut self) -> io::Result<Option<ServerMessage>> {
@@ -271,10 +369,32 @@ mod tests {
     #[test]
     fn server_messages_match_the_spec() {
         round_trip_server(
-            r#"{"type":"hello","api":1,"server":"smed 0.1.0"}"#,
+            r#"{"type":"hello","api":1,"server":"smed 0.2.0"}"#,
             ServerMessage::Hello {
                 api: 1,
-                server: "smed 0.1.0".into(),
+                server: "smed 0.2.0".into(),
+            },
+        );
+        round_trip_server(
+            r#"{"type":"state","device":{"vid":9583,"pid":50739,"name":"3Dconnexion SpaceMouse Enterprise","firmware":"4.42"},"lock":false,"lcd":true}"#,
+            ServerMessage::State {
+                device: Some(DeviceInfo {
+                    vid: 0x256f,
+                    pid: 0xc633,
+                    name: "3Dconnexion SpaceMouse Enterprise".into(),
+                    firmware: Some("4.42".into()),
+                }),
+                lock: false,
+                lcd: Some(true),
+            },
+        );
+        round_trip_server(
+            r#"{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"dark"}"#,
+            ServerMessage::Lcd {
+                owner: false,
+                brightness: 100,
+                text_size: TextSize::Small,
+                theme: Theme::Dark,
             },
         );
         round_trip_server(
@@ -287,6 +407,7 @@ mod tests {
                     firmware: Some("4.42".into()),
                 }),
                 lock: false,
+                lcd: None,
             },
         );
         round_trip_server(
@@ -330,6 +451,57 @@ mod tests {
                 ClientMessage::SetLock { on: false },
             ),
             (r#"{"type":"get_state"}"#, ClientMessage::GetState),
+            (
+                r#"{"type":"set_icon","id":"line","svg":"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 20 20 4' stroke='currentColor' stroke-width='2'/></svg>"}"#,
+                ClientMessage::SetIcon {
+                    id: "line".into(),
+                    svg: Some("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 20 20 4' stroke='currentColor' stroke-width='2'/></svg>".into()),
+                    png: None,
+                },
+            ),
+            (
+                r#"{"type":"set_commands","app":{"name":"SolidCraft","icon":"logo"},"commands":[{"id":"sketch.line","label":"Line","icon":"line"},{"id":"edit.undo","label":"Undo"}]}"#,
+                ClientMessage::SetCommands {
+                    app: App {
+                        name: "SolidCraft".into(),
+                        icon: Some("logo".into()),
+                    },
+                    commands: vec![
+                        Command {
+                            id: "sketch.line".into(),
+                            label: "Line".into(),
+                            icon: Some("line".into()),
+                        },
+                        Command {
+                            id: "edit.undo".into(),
+                            label: "Undo".into(),
+                            icon: None,
+                        },
+                    ],
+                },
+            ),
+            (
+                r#"{"type":"set_environments","environments":[{"id":"sketch","name":"Sketch","keys":{"1":"sketch.line","9":"edit.undo"}}]}"#,
+                ClientMessage::SetEnvironments {
+                    environments: vec![Environment {
+                        id: "sketch".into(),
+                        name: "Sketch".into(),
+                        keys: [("1", "sketch.line"), ("9", "edit.undo")]
+                            .into_iter()
+                            .map(|(k, v)| (k.into(), v.into()))
+                            .collect(),
+                    }],
+                },
+            ),
+            (r#"{"type":"focus","on":true}"#, ClientMessage::Focus { on: true }),
+            (
+                r#"{"type":"set_lcd","brightness":40}"#,
+                ClientMessage::SetLcd {
+                    brightness: Some(40),
+                    text_size: None,
+                    theme: None,
+                },
+            ),
         ];
         for (line, message) in cases {
             assert_eq!(
@@ -343,7 +515,7 @@ mod tests {
     #[test]
     fn unknown_types_and_fields_are_ignored() {
         assert_eq!(
-            serde_json::from_str::<ServerMessage>(r#"{"type":"lcd","page":2}"#).ok(),
+            serde_json::from_str::<ServerMessage>(r#"{"type":"osd","page":2}"#).ok(),
             Some(ServerMessage::Unknown)
         );
         assert_eq!(
@@ -351,7 +523,7 @@ mod tests {
             Some(ServerMessage::Lock { on: true })
         );
         assert_eq!(
-            serde_json::from_str::<ClientMessage>(r#"{"type":"set_lcd"}"#).ok(),
+            serde_json::from_str::<ClientMessage>(r#"{"type":"set_osd"}"#).ok(),
             Some(ClientMessage::Unknown)
         );
     }

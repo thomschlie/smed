@@ -6,7 +6,8 @@ captures themselves are not published, since they carry 3DxWare's traffic and LC
 
 ## Device (our unit, `lsusb -v`, 2026-11-12, before 3DxWare ever saw it)
 
-USB 2.0, `bcdDevice` **4.42** (firmware as shipped/last host), no serial string, 2 interfaces:
+USB 2.0 at **full speed** (12 Mbit/s, kernel log and `lsusb -t`), `bcdDevice` **4.42**
+(firmware as shipped/last host), no serial string, 2 interfaces:
 interface 0 vendor class 255 with bulk OUT EP 0x01 (LCD); interface 1 HID with interrupt IN
 EP 0x82 and OUT EP 0x03.
 
@@ -52,9 +53,27 @@ One frame = two bulk transfers [cap-3dx], [cap-blender]:
    | 15 | `0x0f` | constant so far |
    | 16–511 | 0 | |
 
-2. the image: **raw deflate** (no zlib header) of **640×150 pixels, RGB565 little-endian**
-   (192000 bytes inflated). Decoded, it is exactly what the LCD shows (checked against the
-   device, 2026-11-13).
+2. the image: **raw deflate** (no zlib header) of **640×150 pixels, BGR565 little-endian**:
+   blue in bits 11–15, green 5–10, red 0–4 (192000 bytes inflated). Decoded, it is what the
+   LCD shows [cap-3dx]; the colour order follows from Blender's orange logo, which decodes
+   blue as RGB565 and shows orange on the device, and was confirmed with smed's own frames
+   (an orange icon sent as RGB565 showed cyan) [smed-test].
+
+   The deflate stream must be **one final block with the fixed Huffman codes** (BTYPE 1).
+   Every one of 3DxWare's 88 captured frames has that form [cap-3dx], [cap-blender],
+   [cap-bright]. A stream with dynamic Huffman blocks (zlib/miniz at their default level) is
+   taken on USB without an error, but the LCD keeps showing what it showed before
+   [smed-test].
+
+Without a frame after plug-in, the LCD shows the firmware's own splash ("SpaceMouse
+Enterprise" on blue). A `0x11` frame as the very first frame works; the `0x15` that 3DxWare
+sends first is not needed [smed-test]. Brightness `11 NN` before a frame sets it as 3DxWare
+does [smed-test].
+
+**3DxWare's page layout** (measured on its frames, a host-side choice, not a device
+property): a 25 px header, then 2 rows of 6 tiles, 104×62 px with 1 px lines, rows at y 25
+and 88, columns at x 0, 105, 210 and 326, 431, 536. The 12 px gap at x 314–325 sits over the
+gap between the keys 1–3 and 4–6 (7–9 and 10–12), so each tile is above its key [cap-blender].
 
 **Focus change** (3DxWare switching to another application's tiles): `11 64` (feature),
 `04 01` (output), `14 fc ff 07 1c` (feature), then one `0x11` frame of the old page, 7 `0x18`
@@ -121,6 +140,8 @@ Measured [cap-keys], [cap-long]: the device decides short vs. long itself.
 - The long-press threshold (time from key-down to 0x1d): not visible on USB, needs a stopwatch or video.
 - The LED report, and which LED spacenavd's `led=` drives.
 - Whether `0x18` frames are blended by the device; header bytes 11–14.
+- Whether the device needs the current page resent now and then (3DxWare does, every few
+  seconds); smed sends a frame only on a change.
 - LCD header bytes 11–14; feature reports 0x13 and 0x14; whether 0x15 is the backlight and
   bit 0 of output 0x04 the ring.
 
@@ -149,4 +170,6 @@ Measured [cap-keys], [cap-long]: the device decides short vs. long itself.
 - [cap-bright] capture 2026-11-13: 3DxWare LCD Settings: brightness min,
   middle, max; layout text/icons/both; text size large/small. Layout and text size only
   change the rendered frames (host-side rendering).
+- [smed-test] smed 0.2 (development) driving the device on Linux, 2026-11-16: frames from smed,
+  checked with photos of the LCD.
 - [trial] our test of stock spacenavd 1.4 with Blender 5.3 on Fedora 44, 2026-11-12.

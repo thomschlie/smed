@@ -1,5 +1,5 @@
 # SpaceMouse Enterprise: give the logged-in user access to its hidraw node (motion, keys, LED)
-# and its USB device (the LCD, later). Install to /etc/udev/rules.d/, then
+# and its USB device (the LCD interface). Install to /etc/udev/rules.d/, then
 #   udevadm control --reload && udevadm trigger
 KERNEL=="hidraw*", ATTRS{idVendor}=="256f", ATTRS{idProduct}=="c633", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="256f", ATTR{idProduct}=="c633", TAG+="uaccess"

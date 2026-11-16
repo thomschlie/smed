@@ -1,6 +1,6 @@
 [package]
 name = "smed"
-description = "SpaceMouse Enterprise driver daemon (hidraw, rotation lock, client API)"
+description = "SpaceMouse Enterprise driver daemon (hidraw, rotation lock, LCD, client API)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,5 +9,13 @@ rust-version.workspace = true
 
 [dependencies]
 smed-client.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true
+ab_glyph.workspace = true
+base64.workspace = true
+resvg.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+miniz_oxide.workspace = true
