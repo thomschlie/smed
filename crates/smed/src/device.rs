@@ -92,12 +92,7 @@ pub fn find_in(class: &Path, dev: &Path) -> Option<Found> {
             let usb = usb_device(&sys);
             Found {
                 node: dev.join(entry.file_name()),
-                info: DeviceInfo {
-                    vid,
-                    pid,
-                    name,
-                    firmware: usb.as_deref().and_then(firmware),
-                },
+                info: DeviceInfo::new(vid, pid, name, usb.as_deref().and_then(firmware)),
                 usb,
             }
         })

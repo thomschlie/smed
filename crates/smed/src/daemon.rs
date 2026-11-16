@@ -442,6 +442,8 @@ impl Shared {
             | ClientMessage::GetState
             | ClientMessage::GetScreen
             | ClientMessage::Unknown => false,
+            // A type a newer smed-client added and this smed does not handle yet.
+            _ => false,
         };
         if shown {
             self.redraw(state);
@@ -509,12 +511,7 @@ mod tests {
     }
 
     fn info() -> DeviceInfo {
-        DeviceInfo {
-            vid: 0x256f,
-            pid: 0xc633,
-            name: "SpaceMouse Enterprise".into(),
-            firmware: Some("4.42".into()),
-        }
+        DeviceInfo::new(0x256f, 0xc633, "SpaceMouse Enterprise", Some("4.42".into()))
     }
 
     fn lcd(owner: bool, brightness: u8) -> ServerMessage {

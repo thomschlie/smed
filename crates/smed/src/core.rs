@@ -75,10 +75,12 @@ impl Core {
 
     /// The keys of one kind now down: `up` for those gone, then `down` for the new ones.
     fn keys(&mut self, press: Press, now: Vec<u8>) -> Vec<Action> {
-        let before = match press {
-            Press::Short => std::mem::replace(&mut self.short, now.clone()),
-            Press::Long => std::mem::replace(&mut self.long, now.clone()),
+        let down = if press == Press::Long {
+            &mut self.long
+        } else {
+            &mut self.short
         };
+        let before = std::mem::replace(down, now.clone());
         let event = |id: u8, down: bool| {
             Action::Send(ServerMessage::Key {
                 key: key_name(id),

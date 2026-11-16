@@ -274,27 +274,19 @@ mod tests {
     const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"/>"#;
 
     fn command(id: &str, label: &str, icon: Option<&str>) -> Command {
-        Command {
-            id: id.into(),
-            label: label.into(),
-            icon: icon.map(Into::into),
+        let command = Command::new(id, label);
+        match icon {
+            Some(icon) => command.with_icon(icon),
+            None => command,
         }
     }
 
     fn sketch() -> Environment {
-        Environment {
-            id: "sketch".into(),
-            name: "Sketch".into(),
-            keys: [
-                ("1", "line"),
-                ("3", "circle"),
-                ("12", "gone"),
-                ("t", "line"),
-            ]
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect(),
-        }
+        Environment::new("sketch", "Sketch")
+            .with_key("1", "line")
+            .with_key("3", "circle")
+            .with_key("12", "gone")
+            .with_key("t", "line")
     }
 
     fn labels(page: &Page) -> Vec<Option<&str>> {
@@ -329,10 +321,7 @@ mod tests {
         assert!(lcd.set_icon(1, "pen".into(), Icon::from_svg(SVG).unwrap()));
         let outcome = lcd.set_commands(
             1,
-            App {
-                name: "SolidCraft".into(),
-                icon: Some("pen".into()),
-            },
+            App::new("SolidCraft").with_icon("pen"),
             vec![
                 command("line", "Line", Some("pen")),
                 command("circle", "Circle", Some("missing")),
@@ -430,14 +419,11 @@ mod tests {
             App::default(),
             vec![command("line", "Line", None), command("box", "Box", None)],
         );
-        let env = |id: &str, name: &str, key1: &str| Environment {
-            id: id.into(),
-            name: name.into(),
-            // "t" has no tile: assigned here, it must still run nothing.
-            keys: [("1", key1), ("t", key1)]
-                .into_iter()
-                .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                .collect(),
+        // "t" has no tile: assigned here, it must still run nothing.
+        let env = |id: &str, name: &str, key1: &str| {
+            Environment::new(id, name)
+                .with_key("1", key1)
+                .with_key("t", key1)
         };
         lcd.set_environments(
             1,
@@ -521,10 +507,7 @@ mod tests {
         lcd.connect(1, "a");
         let outcome = lcd.set_commands(
             1,
-            App {
-                name: "A".into(),
-                icon: Some("x".into()),
-            },
+            App::new("A").with_icon("x"),
             vec![
                 command("1", "One", Some("y")),
                 command("2", "Two", Some("x")),
@@ -541,14 +524,11 @@ mod tests {
         lcd.set_commands(1, App::default(), vec![command("line", "Line", None)]);
         let outcome = lcd.set_environments(
             1,
-            vec![Environment {
-                id: "e".into(),
-                name: "E".into(),
-                keys: [("13", "line"), ("v1", "line")]
-                    .into_iter()
-                    .map(|(k, v)| (k.into(), v.into()))
-                    .collect(),
-            }],
+            vec![
+                Environment::new("e", "E")
+                    .with_key("13", "line")
+                    .with_key("v1", "line"),
+            ],
         );
         assert_eq!(outcome.error.as_deref(), Some("e: no key \"13\""));
     }
