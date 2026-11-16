@@ -42,7 +42,10 @@ while let Some(message) = client.next_message()? {
 ```
 
 The message enums and structs are `#[non_exhaustive]`: later API versions can add message
-types, values and fields without breaking your code.
+types, values, and fields of the structs (`App`, `Command`, `Environment`, `DeviceInfo`)
+without breaking your code. Match messages with a `_` arm and `..`, build the structs with
+`new`, and send through the `Client` methods. A new field in a message variant still needs a
+new minor version of this crate.
 
 Not affiliated with or endorsed by 3Dconnexion.
 

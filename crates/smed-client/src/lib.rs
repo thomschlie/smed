@@ -46,9 +46,21 @@
 //! ```
 //!
 //! The enums and structs are `#[non_exhaustive]`, so later API versions can add message types,
-//! values and fields: match messages with a `_` arm and their fields with `..`, and build the
-//! structs with their `new` functions. A new field in a message variant is still a breaking
-//! change of this crate.
+//! values, and fields of `App`, `Command`, `Environment` and `DeviceInfo` without breaking your
+//! code: match messages with a `_` arm and their fields with `..`, build the structs with their
+//! `new` functions, and send client messages through the [`Client`] methods rather than building
+//! [`ClientMessage`] values. A new field in a message variant is still a breaking change of this
+//! crate.
+//!
+//! Outside this crate, a struct cannot be built field by field:
+//!
+//! ```compile_fail
+//! let command = smed_client::Command {
+//!     id: "edit.undo".into(),
+//!     label: "Undo".into(),
+//!     icon: None,
+//! };
+//! ```
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -88,6 +100,7 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// A device with USB IDs `vid`:`pid`, the kernel's HID name and the firmware version.
     pub fn new(vid: u16, pid: u16, name: impl Into<String>, firmware: Option<String>) -> Self {
         Self {
             vid,
