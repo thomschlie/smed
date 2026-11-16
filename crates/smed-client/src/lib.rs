@@ -15,12 +15,48 @@
 //! }
 //! # Ok::<(), std::io::Error>(())
 //! ```
+//!
+//! An application that puts its commands on the keys 1–12 and the LCD (API 2) sends its
+//! catalogue and environments, says when its window has the focus, and runs the commands smed
+//! reports:
+//!
+//! ```no_run
+//! use smed_client::{App, Client, Command, Environment, ServerMessage};
+//!
+//! let mut client = Client::connect("example")?;
+//! client.set_icon_svg("line", "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>\
+//!     <path d='M4 20 20 4' stroke='currentColor' stroke-width='2'/></svg>")?;
+//! client.set_commands(
+//!     &App::new("Example"),
+//!     &[Command::new("sketch.line", "Line").with_icon("line"), Command::new("edit.undo", "Undo")],
+//! )?;
+//! client.set_environments(&[Environment::new("sketch", "Sketch")
+//!     .with_key("1", "sketch.line")
+//!     .with_key("9", "edit.undo")])?;
+//! client.set_environment("sketch")?;
+//! client.focus(true)?;
+//! while let Some(message) = client.next_message()? {
+//!     match message {
+//!         ServerMessage::Command { id, .. } => println!("run {id}"),
+//!         ServerMessage::Error { message } => eprintln!("smed: {message}"),
+//!         _ => {}
+//!     }
+//! }
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
+//! The enums and structs are `#[non_exhaustive]`, so later API versions can add message types,
+//! values and fields: match messages with a `_` arm and their fields with `..`, and build the
+//! structs with their `new` functions. A new field in a message variant is still a breaking
+//! change of this crate.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 
 /// The highest API version this crate speaks.
@@ -41,6 +77,7 @@ pub fn default_socket_path() -> Option<PathBuf> {
 
 /// The device smed has, as reported in `state` and `device`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DeviceInfo {
     pub vid: u16,
     pub pid: u16,
@@ -50,9 +87,21 @@ pub struct DeviceInfo {
     pub firmware: Option<String>,
 }
 
+impl DeviceInfo {
+    pub fn new(vid: u16, pid: u16, name: impl Into<String>, firmware: Option<String>) -> Self {
+        Self {
+            vid,
+            pid,
+            name: name.into(),
+            firmware,
+        }
+    }
+}
+
 /// Whether the device reported a key as pressed briefly or held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Press {
     Short,
     Long,
@@ -61,6 +110,7 @@ pub enum Press {
 /// Text size on the LCD.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TextSize {
     #[default]
     Small,
@@ -70,6 +120,7 @@ pub enum TextSize {
 /// Colour theme of the LCD.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Theme {
     #[default]
     Light,
@@ -78,6 +129,7 @@ pub enum Theme {
 
 /// The application as shown in the LCD's header (`set_commands`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct App {
     pub name: String,
     /// An icon `id` from `set_icon`.
@@ -85,8 +137,25 @@ pub struct App {
     pub icon: Option<String>,
 }
 
+impl App {
+    /// An application called `name`, without an icon.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            icon: None,
+        }
+    }
+
+    /// The same application with the icon `icon` (an `id` from `set_icon`).
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+}
+
 /// One command of the client's catalogue (`set_commands`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Command {
     pub id: String,
     pub label: String,
@@ -95,9 +164,27 @@ pub struct Command {
     pub icon: Option<String>,
 }
 
+impl Command {
+    /// The command `id`, shown as `label`, without an icon.
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            icon: None,
+        }
+    }
+
+    /// The same command with the icon `icon` (an `id` from `set_icon`).
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+}
+
 /// One environment of the client (`set_environments`): a name and which command each key
 /// runs there, by key name (`"1"`–`"12"`) and command `id`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Environment {
     pub id: String,
     pub name: String,
@@ -105,9 +192,28 @@ pub struct Environment {
     pub keys: BTreeMap<String, String>,
 }
 
+impl Environment {
+    /// The environment `id`, shown as `name`, with no keys assigned.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            keys: BTreeMap::new(),
+        }
+    }
+
+    /// The same environment with `key` (a key name, `"1"`–`"12"`) running `command` (an `id`
+    /// from `set_commands`).
+    pub fn with_key(mut self, key: impl Into<String>, command: impl Into<String>) -> Self {
+        self.keys.insert(key.into(), command.into());
+        self
+    }
+}
+
 /// What smed sends.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ServerMessage {
     Hello {
         api: u32,
@@ -165,9 +271,20 @@ pub enum ServerMessage {
     Unknown,
 }
 
+impl ServerMessage {
+    /// The PNG of a `screen` message, decoded; `None` for other messages or invalid base64.
+    pub fn screen_png(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Screen { png } => BASE64.decode(png).ok(),
+            _ => None,
+        }
+    }
+}
+
 /// What a client sends.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ClientMessage {
     Hello {
         api: u32,
@@ -344,6 +461,66 @@ impl Client {
     /// client has the LCD.
     pub fn focus(&mut self, on: bool) -> io::Result<()> {
         self.send(&ClientMessage::Focus { on })
+    }
+
+    /// Sends an SVG icon under `id` (API 2), for `set_commands`. `currentColor` takes the
+    /// LCD's text colour.
+    pub fn set_icon_svg(&mut self, id: &str, svg: &str) -> io::Result<()> {
+        self.send(&ClientMessage::SetIcon {
+            id: id.to_owned(),
+            svg: Some(svg.to_owned()),
+            png: None,
+        })
+    }
+
+    /// Sends a PNG icon (the file's bytes) under `id` (API 2), for `set_commands`.
+    pub fn set_icon_png(&mut self, id: &str, png: &[u8]) -> io::Result<()> {
+        self.send(&ClientMessage::SetIcon {
+            id: id.to_owned(),
+            svg: None,
+            png: Some(BASE64.encode(png)),
+        })
+    }
+
+    /// Sends the application and its command catalogue (API 2); replaces the previous one.
+    pub fn set_commands(&mut self, app: &App, commands: &[Command]) -> io::Result<()> {
+        self.send(&ClientMessage::SetCommands {
+            app: app.clone(),
+            commands: commands.to_vec(),
+        })
+    }
+
+    /// Sends the environments with their key assignments (API 2); replaces the previous ones.
+    pub fn set_environments(&mut self, environments: &[Environment]) -> io::Result<()> {
+        self.send(&ClientMessage::SetEnvironments {
+            environments: environments.to_vec(),
+        })
+    }
+
+    /// Shows environment `id` (from `set_environments`) on the keys and the LCD (API 2).
+    pub fn set_environment(&mut self, id: &str) -> io::Result<()> {
+        self.send(&ClientMessage::SetEnvironment { id: id.to_owned() })
+    }
+
+    /// Changes the LCD settings for every client until smed restarts (API 2); `None` keeps a
+    /// setting. smed answers with `lcd`.
+    pub fn set_lcd(
+        &mut self,
+        brightness: Option<u8>,
+        text_size: Option<TextSize>,
+        theme: Option<Theme>,
+    ) -> io::Result<()> {
+        self.send(&ClientMessage::SetLcd {
+            brightness,
+            text_size,
+            theme,
+        })
+    }
+
+    /// Asks for the current LCD page (API 2); smed answers with `screen`, see
+    /// [`ServerMessage::screen_png`].
+    pub fn get_screen(&mut self) -> io::Result<()> {
+        self.send(&ClientMessage::GetScreen)
     }
 
     /// The next message, blocking; `None` once smed closed the connection. Unknown message
@@ -595,6 +772,107 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ClientMessage>(r#"{"type":"set_osd"}"#).ok(),
             Some(ClientMessage::Unknown)
+        );
+    }
+
+    /// A client on one end of a socket pair, and the other end as smed.
+    fn client_pair() -> (Client, BufReader<UnixStream>) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let client = Client {
+            reader: BufReader::new(ours.try_clone().unwrap()),
+            writer: ours,
+            api: API_VERSION,
+            server: String::new(),
+        };
+        (client, BufReader::new(theirs))
+    }
+
+    fn sent(smed: &mut BufReader<UnixStream>) -> String {
+        let mut line = String::new();
+        smed.read_line(&mut line).unwrap();
+        line.trim_end().to_owned()
+    }
+
+    // The same lines as in client_messages_match_the_spec, from the Client methods and the
+    // constructors.
+    #[test]
+    fn client_methods_send_the_spec_lines() {
+        let (mut client, mut smed) = client_pair();
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 20 20 4' stroke='currentColor' stroke-width='2'/></svg>";
+        client.set_icon_svg("line", svg).unwrap();
+        assert_eq!(
+            sent(&mut smed),
+            format!(r#"{{"type":"set_icon","id":"line","svg":"{svg}"}}"#)
+        );
+        client
+            .set_commands(
+                &App::new("SolidCraft").with_icon("logo"),
+                &[
+                    Command::new("sketch.line", "Line").with_icon("line"),
+                    Command::new("edit.undo", "Undo"),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            sent(&mut smed),
+            r#"{"type":"set_commands","app":{"name":"SolidCraft","icon":"logo"},"commands":[{"id":"sketch.line","label":"Line","icon":"line"},{"id":"edit.undo","label":"Undo"}]}"#
+        );
+        client
+            .set_environments(&[Environment::new("sketch", "Sketch")
+                .with_key("9", "edit.undo")
+                .with_key("1", "sketch.line")])
+            .unwrap();
+        assert_eq!(
+            sent(&mut smed),
+            r#"{"type":"set_environments","environments":[{"id":"sketch","name":"Sketch","keys":{"1":"sketch.line","9":"edit.undo"}}]}"#
+        );
+        client.set_environment("part").unwrap();
+        assert_eq!(sent(&mut smed), r#"{"type":"set_environment","id":"part"}"#);
+        client.focus(true).unwrap();
+        assert_eq!(sent(&mut smed), r#"{"type":"focus","on":true}"#);
+        client.set_lcd(Some(40), None, None).unwrap();
+        assert_eq!(sent(&mut smed), r#"{"type":"set_lcd","brightness":40}"#);
+        client.get_screen().unwrap();
+        assert_eq!(sent(&mut smed), r#"{"type":"get_screen"}"#);
+    }
+
+    #[test]
+    fn png_icons_and_screens_are_base64() {
+        const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+        let (mut client, mut smed) = client_pair();
+        client.set_icon_png("logo", PNG_SIGNATURE).unwrap();
+        assert_eq!(
+            sent(&mut smed),
+            r#"{"type":"set_icon","id":"logo","png":"iVBORw0KGgo="}"#
+        );
+        let screen = ServerMessage::Screen {
+            png: "iVBORw0KGgo=".into(),
+        };
+        assert_eq!(screen.screen_png().as_deref(), Some(PNG_SIGNATURE));
+        let broken = ServerMessage::Screen { png: "*".into() };
+        assert_eq!(broken.screen_png(), None);
+        assert_eq!(ServerMessage::Lock { on: true }.screen_png(), None);
+    }
+
+    #[test]
+    fn constructors_leave_the_optional_parts_empty() {
+        assert_eq!(
+            App::new("Example"),
+            App {
+                name: "Example".into(),
+                icon: None
+            }
+        );
+        assert_eq!(Command::new("a", "A").icon, None);
+        assert!(Environment::new("e", "E").keys.is_empty());
+        assert_eq!(
+            DeviceInfo::new(0x256f, 0xc633, "SpaceMouse", Some("4.42".into())),
+            DeviceInfo {
+                vid: 0x256f,
+                pid: 0xc633,
+                name: "SpaceMouse".into(),
+                firmware: Some("4.42".into()),
+            }
         );
     }
 

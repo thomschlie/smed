@@ -130,7 +130,8 @@ fn palette(theme: Theme) -> Palette {
             empty_tile: [0x12, 0x17, 0x1d],
             empty_text: [0x3c, 0x46, 0x52],
         },
-        Theme::Light => Palette {
+        // Light, and any theme a newer smed-client adds before smed draws it.
+        _ => Palette {
             background: [0x9c, 0xa8, 0xb4],
             header: [0x5a, 0x6b, 0x7d],
             title: [0xff, 0xff, 0xff],
@@ -154,19 +155,20 @@ struct Metrics {
 
 fn metrics(size: TextSize) -> Metrics {
     match size {
-        TextSize::Small => Metrics {
-            title: 14.0,
-            label: 12.0,
-            line: 14.0,
-            icon: 24.0,
-            header_icon: 20.0,
-        },
         TextSize::Large => Metrics {
             title: 16.0,
             label: 16.0,
             line: 18.0,
             icon: 22.0,
             header_icon: 22.0,
+        },
+        // Small, and any size a newer smed-client adds before smed draws it.
+        _ => Metrics {
+            title: 14.0,
+            label: 12.0,
+            line: 14.0,
+            icon: 24.0,
+            header_icon: 20.0,
         },
     }
 }

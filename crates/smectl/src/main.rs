@@ -5,8 +5,7 @@ mod demo;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use base64::Engine;
-use smed_client::{Client, ClientMessage, ServerMessage, TextSize, Theme, to_line};
+use smed_client::{Client, ServerMessage, TextSize, Theme, to_line};
 
 const USAGE: &str = "usage: smectl [--socket PATH] COMMAND\n\
 \n\
@@ -84,8 +83,10 @@ fn run() -> Result<(), String> {
             // smed sends `lcd` after the handshake, and in answer to every `set_lcd`.
             let current = next_lcd(&mut client)?;
             let settings = match request {
-                Some(request) => {
-                    client.send(&request).map_err(|e| e.to_string())?;
+                Some((brightness, text_size, theme)) => {
+                    client
+                        .set_lcd(brightness, text_size, theme)
+                        .map_err(|e| e.to_string())?;
                     next_lcd(&mut client)?
                 }
                 None => current,
@@ -95,9 +96,7 @@ fn run() -> Result<(), String> {
         }
         ["demo-page"] => {
             need_lcd_api(&client)?;
-            for message in demo::messages() {
-                client.send(&message).map_err(|e| e.to_string())?;
-            }
+            demo::send(&mut client).map_err(|e| e.to_string())?;
             eprintln!(
                 "smectl: demo page sent; key 11 switches the environment; it stays while \
                  smectl runs (Ctrl-C ends it)"
@@ -111,9 +110,7 @@ fn run() -> Result<(), String> {
                             && id == demo::SWITCH
                         {
                             let other = demo::other_environment(env);
-                            client
-                                .send(&ClientMessage::SetEnvironment { id: other.into() })
-                                .map_err(|e| e.to_string())?;
+                            client.set_environment(other).map_err(|e| e.to_string())?;
                         }
                     }
                     None => return Err("smed closed the connection".into()),
@@ -122,15 +119,11 @@ fn run() -> Result<(), String> {
         }
         ["screenshot", path] => {
             need_lcd_api(&client)?;
-            client
-                .send(&ClientMessage::GetScreen)
-                .map_err(|e| e.to_string())?;
+            client.get_screen().map_err(|e| e.to_string())?;
             loop {
                 match next(&mut client)? {
-                    ServerMessage::Screen { png } => {
-                        let bytes = base64::engine::general_purpose::STANDARD
-                            .decode(png)
-                            .map_err(|e| format!("smed sent invalid base64: {e}"))?;
+                    message @ ServerMessage::Screen { .. } => {
+                        let bytes = message.screen_png().ok_or("smed sent invalid base64")?;
                         std::fs::write(path, bytes).map_err(|e| format!("{path}: {e}"))?;
                         println!("{path}");
                         return Ok(());
@@ -144,6 +137,9 @@ fn run() -> Result<(), String> {
     }
 }
 
+/// Brightness, text size and theme for `set_lcd`; `None` keeps a setting.
+type LcdRequest = (Option<u8>, Option<TextSize>, Option<Theme>);
+
 fn need_lcd_api(client: &Client) -> Result<(), String> {
     if client.api < 2 {
         return Err(format!(
@@ -154,8 +150,8 @@ fn need_lcd_api(client: &Client) -> Result<(), String> {
     Ok(())
 }
 
-/// `set_lcd` from the options, or `None` without options.
-fn lcd_options(options: &[&str]) -> Result<Option<ClientMessage>, String> {
+/// The `set_lcd` settings from the options, or `None` without options.
+fn lcd_options(options: &[&str]) -> Result<Option<LcdRequest>, String> {
     let (mut brightness, mut text_size, mut theme) = (None, None, None);
     let mut options = options.iter();
     while let Some(option) = options.next() {
@@ -188,13 +184,8 @@ fn lcd_options(options: &[&str]) -> Result<Option<ClientMessage>, String> {
         }
     }
     Ok(
-        (brightness.is_some() || text_size.is_some() || theme.is_some()).then_some(
-            ClientMessage::SetLcd {
-                brightness,
-                text_size,
-                theme,
-            },
-        ),
+        (brightness.is_some() || text_size.is_some() || theme.is_some())
+            .then_some((brightness, text_size, theme)),
     )
 }
 

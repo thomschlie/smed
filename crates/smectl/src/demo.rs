@@ -1,9 +1,11 @@
 //! `smectl demo-page`: a page with labels and icons to try the LCD without an application.
 //! The icons are simple shapes drawn for this demo.
 
-use std::collections::BTreeMap;
+use std::io;
 
-use smed_client::{App, ClientMessage, Command, Environment};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use smed_client::{App, Client, Command, Environment};
 
 const CUBE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2 21 7v10l-9 5-9-5V7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3 7l9 5 9-5M12 12v10" fill="none" stroke="currentColor" stroke-width="2"/></svg>"#;
 const LINE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 20 20 4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="4" cy="20" r="2.5" fill="currentColor"/><circle cx="20" cy="4" r="2.5" fill="currentColor"/></svg>"#;
@@ -24,27 +26,23 @@ pub fn other_environment(env: &str) -> &'static str {
     if env == "demo" { "shapes" } else { "demo" }
 }
 
-/// The messages that set up the demo page, `focus` last.
-pub fn messages() -> Vec<ClientMessage> {
-    let svg = |id: &str, source: &str| ClientMessage::SetIcon {
-        id: id.into(),
-        svg: Some(source.into()),
-        png: None,
-    };
-    let mut messages = vec![
-        svg("cube", CUBE),
-        svg("line", LINE),
-        svg("circle", CIRCLE),
-        svg("rectangle", RECTANGLE),
-        svg("undo", UNDO),
-        svg("redo", REDO),
-        svg("extrude", EXTRUDE),
-        ClientMessage::SetIcon {
-            id: "disc".into(),
-            svg: None,
-            png: Some(DISC_PNG.into()),
-        },
-    ];
+/// Sends the demo page: icons, commands, the two environments, then `focus`.
+pub fn send(client: &mut Client) -> io::Result<()> {
+    for (id, svg) in [
+        ("cube", CUBE),
+        ("line", LINE),
+        ("circle", CIRCLE),
+        ("rectangle", RECTANGLE),
+        ("undo", UNDO),
+        ("redo", REDO),
+        ("extrude", EXTRUDE),
+    ] {
+        client.set_icon_svg(id, svg)?;
+    }
+    let disc = BASE64
+        .decode(DISC_PNG)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    client.set_icon_png("disc", &disc)?;
     // "Demo": keys 1-10, and 11 switches to "Shapes" (12 stays empty to show an empty tile).
     // "Shapes": a few of the same commands on other keys, and 11 switches back.
     let commands = [
@@ -60,26 +58,22 @@ pub fn messages() -> Vec<ClientMessage> {
         ("redo", "Redo", Some("redo")),
         (SWITCH, "Switch environment", Some("cube")),
     ];
-    messages.push(ClientMessage::SetCommands {
-        app: App {
-            name: "smectl demo".into(),
-            icon: Some("cube".into()),
-        },
-        commands: commands
-            .iter()
-            .map(|(id, label, icon)| Command {
-                id: (*id).into(),
-                label: (*label).into(),
-                icon: icon.map(Into::into),
-            })
-            .collect(),
-    });
-    let keys: BTreeMap<String, String> = commands
+    let catalogue: Vec<Command> = commands
         .iter()
-        .enumerate()
-        .map(|(index, (id, _, _))| ((index + 1).to_string(), (*id).into()))
+        .map(|(id, label, icon)| {
+            let command = Command::new(*id, *label);
+            match icon {
+                Some(icon) => command.with_icon(*icon),
+                None => command,
+            }
+        })
         .collect();
-    let shapes: BTreeMap<String, String> = [
+    client.set_commands(&App::new("smectl demo").with_icon("cube"), &catalogue)?;
+    let demo = commands.iter().enumerate().fold(
+        Environment::new("demo", "Demo"),
+        |env, (index, (id, _, _))| env.with_key((index + 1).to_string(), *id),
+    );
+    let shapes = [
         ("1", "circle"),
         ("2", "rectangle"),
         ("4", "extrude"),
@@ -88,22 +82,9 @@ pub fn messages() -> Vec<ClientMessage> {
         ("11", SWITCH),
     ]
     .into_iter()
-    .map(|(key, id)| (key.into(), id.into()))
-    .collect();
-    messages.push(ClientMessage::SetEnvironments {
-        environments: vec![
-            Environment {
-                id: "demo".into(),
-                name: "Demo".into(),
-                keys,
-            },
-            Environment {
-                id: "shapes".into(),
-                name: "Shapes".into(),
-                keys: shapes,
-            },
-        ],
+    .fold(Environment::new("shapes", "Shapes"), |env, (key, id)| {
+        env.with_key(key, id)
     });
-    messages.push(ClientMessage::Focus { on: true });
-    messages
+    client.set_environments(&[demo, shapes])?;
+    client.focus(true)
 }
