@@ -48,8 +48,8 @@ With `"api":1` the same handshake is `hello` and `state` without the `lcd` field
   `min(client api, server api)` and uses that. A version smed does not support at all gets an
   `error` message, and smed closes the connection.
 - Before the handshake smed sends nothing. A message other than `hello` gets an `error`.
-- A line longer than 262144 bytes (256 KiB, icons included) gets an `error` and is dropped;
-  the connection stays.
+- *API 2:* a line longer than 262144 bytes (256 KiB, icons included) gets an `error` and is
+  dropped; the connection stays. With API 1 there is no such limit, as before.
 
 ## Server → client
 
