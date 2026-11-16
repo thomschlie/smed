@@ -144,6 +144,14 @@ pub enum ServerMessage {
         text_size: TextSize,
         theme: Theme,
     },
+    /// API 2: a key the focused client assigned a command to went down: `id` of the command,
+    /// `env` the environment it is assigned in, `key` the key's name, `press` short or long.
+    Command {
+        id: String,
+        env: String,
+        key: String,
+        press: Press,
+    },
     /// API 2: the answer to `get_screen`: the current LCD page as a PNG (base64), drawn as it
     /// goes to the device.
     Screen {
@@ -186,6 +194,10 @@ pub enum ClientMessage {
     /// API 2: the environments with their key assignments; replaces the previous ones.
     SetEnvironments {
         environments: Vec<Environment>,
+    },
+    /// API 2: show environment `id` (from `set_environments`); its keys run their commands.
+    SetEnvironment {
+        id: String,
     },
     /// API 2: this client's window got (`true`) or lost (`false`) the input focus.
     Focus {
@@ -442,6 +454,15 @@ mod tests {
             },
         );
         round_trip_server(
+            r#"{"type":"command","id":"sketch.line","env":"sketch","key":"1","press":"short"}"#,
+            ServerMessage::Command {
+                id: "sketch.line".into(),
+                env: "sketch".into(),
+                key: "1".into(),
+                press: Press::Short,
+            },
+        );
+        round_trip_server(
             r#"{"type":"screen","png":"iVBORw0KGgo="}"#,
             ServerMessage::Screen {
                 png: "iVBORw0KGgo=".into(),
@@ -539,6 +560,10 @@ mod tests {
             ),
             (r#"{"type":"focus","on":true}"#, ClientMessage::Focus { on: true }),
             (r#"{"type":"get_screen"}"#, ClientMessage::GetScreen),
+            (
+                r#"{"type":"set_environment","id":"part"}"#,
+                ClientMessage::SetEnvironment { id: "part".into() },
+            ),
             (
                 r#"{"type":"set_lcd","brightness":40}"#,
                 ClientMessage::SetLcd {

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use smed_client::{App, Command, Environment, TextSize, Theme};
+use smed_client::{App, Command, Environment, Press, ServerMessage, TextSize, Theme, key_id};
 
 use crate::config::{LcdSettings, MAX_BRIGHTNESS};
 use crate::render::{Icon, Page, TILES, Tile};
@@ -17,7 +17,46 @@ struct ClientPage {
     app: Option<App>,
     commands: Vec<Command>,
     environments: Vec<Environment>,
+    /// The environment `set_environment` chose; `None` (or one no longer sent) is the first.
+    environment: Option<String>,
     icons: HashMap<String, Arc<Icon>>,
+}
+
+impl ClientPage {
+    /// The environment in use: the chosen one, else the first.
+    fn environment(&self) -> Option<&Environment> {
+        self.environment
+            .as_ref()
+            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
+            .or_else(|| self.environments.first())
+    }
+
+    /// Icon ids the commands and the app use that this connection has not sent.
+    fn unknown_icons(&self) -> Vec<String> {
+        let mut unknown: Vec<String> = self
+            .app
+            .iter()
+            .filter_map(|app| app.icon.as_ref())
+            .chain(self.commands.iter().filter_map(|c| c.icon.as_ref()))
+            .filter(|id| !self.icons.contains_key(*id))
+            .cloned()
+            .collect();
+        unknown.dedup();
+        unknown
+    }
+}
+
+/// The keys that have a tile, by their v1 names.
+const TILE_KEYS: [&str; TILES] = [
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+];
+
+/// What a `set_*` request did: whether the LCD needs a new frame, and a problem to report as
+/// `error` (the request is applied all the same, except where a method says otherwise).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Outcome {
+    pub redraw: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -78,21 +117,85 @@ impl Lcd {
         self.shown(client)
     }
 
-    pub fn set_commands(&mut self, client: u64, app: App, commands: Vec<Command>) -> bool {
+    /// Replaces the catalogue. Icon ids not sent yet are reported; their tiles show no icon.
+    pub fn set_commands(&mut self, client: u64, app: App, commands: Vec<Command>) -> Outcome {
         let Some(page) = self.clients.get_mut(&client) else {
-            return false;
+            return Outcome::default();
         };
         page.app = Some(app);
         page.commands = commands;
-        self.shown(client)
+        let unknown = page.unknown_icons();
+        Outcome {
+            redraw: self.shown(client),
+            error: (!unknown.is_empty()).then(|| format!("unknown icon: {}", unknown.join(", "))),
+        }
     }
 
-    pub fn set_environments(&mut self, client: u64, environments: Vec<Environment>) -> bool {
+    /// Replaces the environments. Unknown command ids and names that are no key are reported;
+    /// those keys stay empty. Key names without a tile (`"t"`, `"v1"` …) are kept quietly.
+    pub fn set_environments(&mut self, client: u64, environments: Vec<Environment>) -> Outcome {
         let Some(page) = self.clients.get_mut(&client) else {
-            return false;
+            return Outcome::default();
         };
+        let mut problems = Vec::new();
+        for environment in &environments {
+            for (key, command) in &environment.keys {
+                if key_id(key).is_none() {
+                    problems.push(format!("{}: no key \"{key}\"", environment.id));
+                } else if !page.commands.iter().any(|c| &c.id == command) {
+                    problems.push(format!("{}: unknown command {command}", environment.id));
+                }
+            }
+        }
         page.environments = environments;
-        self.shown(client)
+        Outcome {
+            redraw: self.shown(client),
+            error: (!problems.is_empty()).then(|| problems.join("; ")),
+        }
+    }
+
+    /// Switches to environment `id`. An id the client has not sent is an error and changes
+    /// nothing.
+    pub fn set_environment(&mut self, client: u64, id: String) -> Outcome {
+        let Some(page) = self.clients.get_mut(&client) else {
+            return Outcome::default();
+        };
+        if !page.environments.iter().any(|e| e.id == id) {
+            return Outcome {
+                redraw: false,
+                error: Some(format!("unknown environment {id}")),
+            };
+        }
+        let before = page.environment().map(|e| e.id.clone());
+        let changed = before.as_deref() != Some(id.as_str());
+        page.environment = Some(id);
+        Outcome {
+            redraw: changed && self.shown(client),
+            error: None,
+        }
+    }
+
+    /// The `command` for a press of `key` (a v1 key name): the owner, and the message, if
+    /// the owner's environment runs a command on that key. Only the keys 1-12 run commands.
+    pub fn command(&self, key: &str, press: Press) -> Option<(u64, ServerMessage)> {
+        if !TILE_KEYS.contains(&key) {
+            return None;
+        }
+        let owner = self.owner?;
+        let page = self.clients.get(&owner)?;
+        let environment = page.environment()?;
+        let id = environment.keys.get(key)?;
+        page.commands.iter().any(|c| &c.id == id).then(|| {
+            (
+                owner,
+                ServerMessage::Command {
+                    id: id.clone(),
+                    env: environment.id.clone(),
+                    key: key.to_owned(),
+                    press,
+                },
+            )
+        })
     }
 
     /// True when the owner changed.
@@ -130,13 +233,13 @@ impl Lcd {
         self.settings != before
     }
 
-    /// The page to show now: the owner's first environment, or smed's placeholder.
+    /// The page to show now: the owner's environment, or smed's placeholder.
     pub fn page(&self) -> Page {
         let Some(client) = self.owner.and_then(|owner| self.clients.get(&owner)) else {
             return Page::placeholder();
         };
         let icon = |id: &Option<String>| id.as_ref().and_then(|id| client.icons.get(id)).cloned();
-        let environment = client.environments.first();
+        let environment = client.environment();
         let mut tiles: [Option<Tile>; TILES] = Default::default();
         if let Some(environment) = environment {
             for (index, tile) in tiles.iter_mut().enumerate() {
@@ -205,7 +308,7 @@ mod tests {
         let mut lcd = Lcd::default();
         lcd.connect(1, "solidcraft");
         assert!(
-            !lcd.set_commands(1, App::default(), vec![]),
+            !lcd.set_commands(1, App::default(), vec![]).redraw,
             "not shown yet"
         );
         assert_eq!(lcd.page().title, "smed");
@@ -223,18 +326,32 @@ mod tests {
             "the hello name before set_commands"
         );
         assert!(lcd.set_icon(1, "pen".into(), Icon::from_svg(SVG).unwrap()));
-        assert!(lcd.set_commands(
+        let outcome = lcd.set_commands(
             1,
             App {
                 name: "SolidCraft".into(),
-                icon: Some("pen".into())
+                icon: Some("pen".into()),
             },
             vec![
                 command("line", "Line", Some("pen")),
-                command("circle", "Circle", Some("missing"))
+                command("circle", "Circle", Some("missing")),
             ],
-        ));
-        assert!(lcd.set_environments(1, vec![sketch()]));
+        );
+        assert_eq!(
+            outcome,
+            Outcome {
+                redraw: true,
+                error: Some("unknown icon: missing".into())
+            },
+            "applied, and the unknown icon reported"
+        );
+        let outcome = lcd.set_environments(1, vec![sketch()]);
+        assert!(outcome.redraw);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("sketch: unknown command gone"),
+            "\"t\" is a key without a tile: kept quietly"
+        );
         let page = lcd.page();
         assert_eq!(page.title, "SolidCraft");
         assert_eq!(page.environment.as_deref(), Some("Sketch"));
@@ -303,5 +420,109 @@ mod tests {
         assert_eq!(lcd.settings().text_size, TextSize::Large);
         assert!(lcd.set(Some(0), None, None));
         assert_eq!(lcd.settings().brightness, 0);
+    }
+
+    fn two_environments(lcd: &mut Lcd) {
+        lcd.connect(1, "a");
+        lcd.set_commands(
+            1,
+            App::default(),
+            vec![command("line", "Line", None), command("box", "Box", None)],
+        );
+        let env = |id: &str, name: &str, key1: &str| Environment {
+            id: id.into(),
+            name: name.into(),
+            keys: [("1".to_owned(), key1.to_owned())].into_iter().collect(),
+        };
+        lcd.set_environments(
+            1,
+            vec![env("sketch", "Sketch", "line"), env("part", "Part", "box")],
+        );
+    }
+
+    #[test]
+    fn set_environment_switches_the_page_and_the_commands() {
+        let mut lcd = Lcd::default();
+        two_environments(&mut lcd);
+        assert_eq!(lcd.command("1", Press::Short), None, "no owner, no command");
+        lcd.focus(1, true);
+        assert_eq!(
+            labels(&lcd.page())[0],
+            Some("Line"),
+            "the first environment"
+        );
+        assert_eq!(
+            lcd.command("1", Press::Short),
+            Some((
+                1,
+                ServerMessage::Command {
+                    id: "line".into(),
+                    env: "sketch".into(),
+                    key: "1".into(),
+                    press: Press::Short
+                }
+            ))
+        );
+        assert_eq!(
+            lcd.set_environment(1, "part".into()),
+            Outcome {
+                redraw: true,
+                error: None
+            }
+        );
+        assert_eq!(lcd.page().environment.as_deref(), Some("Part"));
+        assert_eq!(labels(&lcd.page())[0], Some("Box"));
+        let Some((_, ServerMessage::Command { id, env, press, .. })) =
+            lcd.command("1", Press::Long)
+        else {
+            panic!("a command");
+        };
+        assert_eq!(
+            (id.as_str(), env.as_str(), press),
+            ("box", "part", Press::Long)
+        );
+        assert!(!lcd.set_environment(1, "part".into()).redraw, "no change");
+        assert_eq!(
+            lcd.set_environment(1, "drawing".into()),
+            Outcome {
+                redraw: false,
+                error: Some("unknown environment drawing".into())
+            }
+        );
+        assert_eq!(lcd.page().environment.as_deref(), Some("Part"), "unchanged");
+    }
+
+    #[test]
+    fn only_assigned_keys_1_to_12_run_commands() {
+        let mut lcd = Lcd::default();
+        two_environments(&mut lcd);
+        lcd.focus(1, true);
+        assert!(lcd.command("2", Press::Short).is_none(), "unassigned");
+        assert!(lcd.command("t", Press::Short).is_none(), "no tile key");
+        lcd.connect(2, "b");
+        lcd.focus(2, true);
+        assert!(
+            lcd.command("1", Press::Short).is_none(),
+            "the owner has nothing on 1"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_no_key_is_reported() {
+        let mut lcd = Lcd::default();
+        lcd.connect(1, "a");
+        lcd.set_commands(1, App::default(), vec![command("line", "Line", None)]);
+        let outcome = lcd.set_environments(
+            1,
+            vec![Environment {
+                id: "e".into(),
+                name: "E".into(),
+                keys: [("13", "line"), ("v1", "line")]
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
+            }],
+        );
+        assert_eq!(outcome.error.as_deref(), Some("e: no key \"13\""));
     }
 }

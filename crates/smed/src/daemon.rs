@@ -77,9 +77,30 @@ impl State {
                         eprintln!("smed: writing output report {report:02x?}: {error}");
                     }
                 }
-                Action::Send(message) => self.broadcast(&message),
+                Action::Send(message) => {
+                    self.broadcast(&message);
+                    // A key with a command: the callback to the client that has the LCD.
+                    if let ServerMessage::Key {
+                        key,
+                        press,
+                        down: true,
+                        ..
+                    } = &message
+                        && let Some((owner, command)) = self.lcd.command(key, *press)
+                    {
+                        self.send_to(owner, &command);
+                    }
+                }
             }
         }
+    }
+
+    /// Sends `message` to client `id` only; drops the client if it cannot take it.
+    fn send_to(&mut self, id: u64, message: &ServerMessage) {
+        let line = to_line(message);
+        self.clients.retain_mut(|client| {
+            client.id != id || client.stream.write_all(line.as_bytes()).is_ok()
+        });
     }
 
     fn broadcast(&mut self, message: &ServerMessage) {
@@ -361,6 +382,8 @@ impl Shared {
         id: u64,
         message: ClientMessage,
     ) -> Result<(), String> {
+        // A problem that does not stop the request (an unknown id): reported after it.
+        let mut error = None;
         let shown = match message {
             ClientMessage::SetIcon {
                 id: icon_id,
@@ -376,10 +399,19 @@ impl Shared {
                 state.lcd.set_icon(id, icon_id, icon)
             }
             ClientMessage::SetCommands { app, commands } => {
-                state.lcd.set_commands(id, app, commands)
+                let outcome = state.lcd.set_commands(id, app, commands);
+                error = outcome.error;
+                outcome.redraw
             }
             ClientMessage::SetEnvironments { environments } => {
-                state.lcd.set_environments(id, environments)
+                let outcome = state.lcd.set_environments(id, environments);
+                error = outcome.error;
+                outcome.redraw
+            }
+            ClientMessage::SetEnvironment { id: environment } => {
+                let outcome = state.lcd.set_environment(id, environment);
+                error = outcome.error;
+                outcome.redraw
             }
             ClientMessage::Focus { on } => {
                 let changed = state.lcd.focus(id, on);
@@ -414,16 +446,17 @@ impl Shared {
         if shown {
             self.redraw(state);
         }
-        Ok(())
+        error.map_or(Ok(()), Err)
     }
 }
 
 /// Whether `line` is one of the message types API 2 added.
 fn is_api_2_type(line: &str) -> bool {
-    const TYPES: [&str; 6] = [
+    const TYPES: [&str; 7] = [
         "set_icon",
         "set_commands",
         "set_environments",
+        "set_environment",
         "focus",
         "set_lcd",
         "get_screen",
@@ -908,6 +941,133 @@ mod tests {
             shared.state().lcd.page().title,
             "big",
             "the catalogue was not taken"
+        );
+    }
+
+    fn keys_report(report: u8, ids: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0_u8; 13];
+        bytes[0] = report;
+        bytes[1..=ids.len()].copy_from_slice(ids);
+        bytes
+    }
+
+    #[test]
+    fn a_key_with_a_command_calls_the_focused_client_back() {
+        let shared = Shared::new();
+        let (mut owner, mut owner_reader) = hello(&shared, 2, "app");
+        let (mut other, mut other_reader) = hello(&shared, 2, "other");
+        let (mut old, mut old_reader) = connect(&shared);
+        writeln!(old, r#"{{"type":"hello","api":1,"client":"old"}}"#).unwrap();
+        read(&mut old_reader);
+        read(&mut old_reader);
+        let seen = exchange(
+            &mut owner,
+            &mut owner_reader,
+            &[
+                r#"{"type":"set_commands","app":{"name":"App"},"commands":[{"id":"line","label":"Line"},{"id":"box","label":"Box"}]}"#,
+                r#"{"type":"set_environments","environments":[{"id":"sketch","name":"Sketch","keys":{"1":"line"}},{"id":"part","name":"Part","keys":{"1":"box"}}]}"#,
+                r#"{"type":"set_environment","id":"part"}"#,
+                r#"{"type":"focus","on":true}"#,
+            ],
+        );
+        assert_eq!(seen, vec![lcd(true, 100)]);
+        exchange(&mut other, &mut other_reader, &[]);
+
+        // Key 1 short, then key 2 (unassigned), then key 1 long.
+        let device = Arc::new(Fake::with_reports([
+            keys_report(0x1c, &[13]),
+            keys_report(0x1c, &[]),
+            keys_report(0x1c, &[14]),
+            keys_report(0x1c, &[]),
+            keys_report(0x1d, &[13]),
+            keys_report(0x1d, &[]),
+        ]));
+        shared.run_device(device, info(), None).unwrap();
+
+        let command = |press| ServerMessage::Command {
+            id: "box".into(),
+            env: "part".into(),
+            key: "1".into(),
+            press,
+        };
+        let key1 = |press, down| ServerMessage::Key {
+            key: "1".into(),
+            id: 13,
+            press,
+            down,
+        };
+        let seen = exchange(&mut owner, &mut owner_reader, &[]);
+        let seen: Vec<_> = seen
+            .into_iter()
+            .filter(|m| !matches!(m, ServerMessage::Device { .. }))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                key1(Press::Short, true),
+                command(Press::Short),
+                key1(Press::Short, false),
+                key("2", 14, true),
+                key("2", 14, false),
+                key1(Press::Long, true),
+                command(Press::Long),
+                key1(Press::Long, false),
+            ],
+            "key first, then the command, on down only; none for an unassigned key"
+        );
+        for (client, reader) in [(&mut other, &mut other_reader), (&mut old, &mut old_reader)] {
+            let seen = exchange(client, reader, &[]);
+            assert!(
+                !seen
+                    .iter()
+                    .any(|m| matches!(m, ServerMessage::Command { .. })),
+                "only the owner gets the command: {seen:?}"
+            );
+            assert!(
+                seen.contains(&key1(Press::Short, true)),
+                "every client gets the key"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_ids_get_an_error_and_the_rest_is_applied() {
+        let shared = Shared::new();
+        let (mut client, mut reader) = hello(&shared, 2, "app");
+        let seen = exchange(
+            &mut client,
+            &mut reader,
+            &[
+                r#"{"type":"set_commands","app":{"name":"App","icon":"nope"},"commands":[{"id":"line","label":"Line"}]}"#,
+                r#"{"type":"set_environments","environments":[{"id":"e","name":"E","keys":{"1":"line","2":"gone","13":"line"}}]}"#,
+                r#"{"type":"set_environment","id":"missing"}"#,
+                r#"{"type":"focus","on":true}"#,
+            ],
+        );
+        let error = |message: &str| ServerMessage::Error {
+            message: message.into(),
+        };
+        assert_eq!(
+            seen,
+            vec![
+                error("unknown icon: nope"),
+                // Keys in name order, as JSON objects have none.
+                error("e: no key \"13\"; e: unknown command gone"),
+                error("unknown environment missing"),
+                lcd(true, 100),
+            ],
+            "the connection stays"
+        );
+        let page = shared.state().lcd.page();
+        assert_eq!(page.title, "App");
+        assert_eq!(
+            page.tiles[0].as_ref().unwrap().label,
+            "Line",
+            "the rest applied"
+        );
+        assert!(
+            page.tiles[1].is_none(),
+            "the unknown command's key is empty"
         );
     }
 }

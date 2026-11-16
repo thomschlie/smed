@@ -16,6 +16,14 @@ const EXTRUDE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2
 /// An orange disc, 32×32 PNG: the PNG path.
 const DISC_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAvklEQVR42t2XzQ2AIAxGWYAVnIYd2IEduoEHp2EHtnEDrQlcCII/0FYP70I03xMEWrXOk+JEfVFAIwZxCERcHNMjBSzika2Bj892Ezi+LFwIzgnx3VcC8CA4B54KLB3CE8tdAegYXp2JszXfBmGuCISBAqElYAeGJ2xNwBMI+DMBTRCe0CUBQyhgSgKOUMCVBIBQAEQKsC8B+0/Ivg3ZDyIRRzH7ZSTiOmYvSESUZCKKUhFluYjGRExr9s/ueAdSsKMVaIRG/QAAAABJRU5ErkJggg==";
 
+/// The command on key 11: switches between the two environments.
+pub const SWITCH: &str = "switch";
+
+/// The environment to switch to from `env`.
+pub fn other_environment(env: &str) -> &'static str {
+    if env == "demo" { "shapes" } else { "demo" }
+}
+
 /// The messages that set up the demo page, `focus` last.
 pub fn messages() -> Vec<ClientMessage> {
     let svg = |id: &str, source: &str| ClientMessage::SetIcon {
@@ -37,7 +45,8 @@ pub fn messages() -> Vec<ClientMessage> {
             png: Some(DISC_PNG.into()),
         },
     ];
-    // Key 1-10; 11 and 12 stay unassigned to show empty tiles.
+    // "Demo": keys 1-10, and 11 switches to "Shapes" (12 stays empty to show an empty tile).
+    // "Shapes": a few of the same commands on other keys, and 11 switches back.
     let commands = [
         ("line", "Line", Some("line")),
         ("circle", "Circle", Some("circle")),
@@ -49,6 +58,7 @@ pub fn messages() -> Vec<ClientMessage> {
         ("unbreakable", "Supercalifragilistic", None),
         ("undo", "Undo", Some("undo")),
         ("redo", "Redo", Some("redo")),
+        (SWITCH, "Switch environment", Some("cube")),
     ];
     messages.push(ClientMessage::SetCommands {
         app: App {
@@ -69,12 +79,30 @@ pub fn messages() -> Vec<ClientMessage> {
         .enumerate()
         .map(|(index, (id, _, _))| ((index + 1).to_string(), (*id).into()))
         .collect();
+    let shapes: BTreeMap<String, String> = [
+        ("1", "circle"),
+        ("2", "rectangle"),
+        ("4", "extrude"),
+        ("7", "undo"),
+        ("8", "redo"),
+        ("11", SWITCH),
+    ]
+    .into_iter()
+    .map(|(key, id)| (key.into(), id.into()))
+    .collect();
     messages.push(ClientMessage::SetEnvironments {
-        environments: vec![Environment {
-            id: "demo".into(),
-            name: "Demo".into(),
-            keys,
-        }],
+        environments: vec![
+            Environment {
+                id: "demo".into(),
+                name: "Demo".into(),
+                keys,
+            },
+            Environment {
+                id: "shapes".into(),
+                name: "Shapes".into(),
+                keys: shapes,
+            },
+        ],
     });
     messages.push(ClientMessage::Focus { on: true });
     messages

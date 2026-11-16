@@ -62,6 +62,7 @@ With `"api":1` the same handshake is `hello` and `state` without the `lcd` field
 | `key` | `key`, `id`, `press`, `down` | a key went down or up |
 | `lock` | `on` (bool) | the rotation lock changed (Lock key or a client's `set_lock`) |
 | `lcd` | `owner` (bool), `brightness` (0–100), `text_size` (`"small"`/`"large"`), `theme` (`"light"`/`"dark"`) | *API 2.* `owner`: this connection has the LCD. Sent after the handshake, when the owner or a setting changes, and in answer to every `set_lcd` |
+| `command` | `id`, `env`, `key`, `press` | *API 2.* A key with a command went down (see "Commands"); only to the client that has the LCD |
 | `screen` | `png` (base64) | *API 2.* The answer to `get_screen`: the page smed shows now, drawn as it goes to the LCD (also without a device), as a 640×150 PNG |
 | `error` | `message` | the last request failed |
 
@@ -129,6 +130,7 @@ and a re-plug of the device, but not a restart of smed.
 | `set_icon` | `id`, and `svg` (SVG source) or `png` (base64 PNG) | *API 2.* Keep an icon under `id` for this connection; replaces one with the same `id` |
 | `set_commands` | `app` {`name`, `icon`?}, `commands` [{`id`, `label`, `icon`?}] | *API 2.* The application and its command catalogue; replaces the previous ones |
 | `set_environments` | `environments` [{`id`, `name`, `keys` {key name: command `id`}}] | *API 2.* The environments and which command each key runs in them; replaces the previous ones |
+| `set_environment` | `id` | *API 2.* Use environment `id` (from `set_environments`): its labels show, its keys run their commands |
 | `focus` | `on` (bool) | *API 2.* This client's window got or lost the input focus |
 | `set_lcd` | `brightness`?, `text_size`?, `theme`? | *API 2.* Change the LCD settings, for every client, until smed restarts; smed answers with `lcd` |
 | `get_screen` | — | *API 2.* smed answers with `screen` |
@@ -144,10 +146,10 @@ label. **smed draws it** from what clients send; a client sends no pictures of p
   leaves the LCD without an owner: smed then shows its own page. A client should send
   `focus` whenever its window gains or loses the input focus (smed does not watch windows
   yet). `key`, `motion` and `lock` still go to every client.
-- **What it shows.** The owner's `app` (`name`, else the name from its `hello`), its first
-  environment's `name`, and for each key `"1"`–`"12"` in that environment's `keys` the
-  command's `label` and `icon`. A key with no command, or with a command `id` or icon `id`
-  smed does not know, shows an empty tile (icon left out). Only the keys 1–12 have tiles;
+- **What it shows.** The owner's `app` (`name`, else the name from its `hello`), its
+  environment's `name` (the one `set_environment` chose, else the first), and for each key `"1"`–`"12"` in that environment's `keys` the
+  command's `label` and `icon`. A key with no command, or with a command `id` smed does not
+  know, shows an empty tile; an icon `id` smed does not know is left out. Only the keys 1–12 have tiles;
   other key names in `keys` are kept for later versions.
 - **Icons.** SVG is drawn without text elements and without raster images inside it.
   `currentColor` is drawn in the theme's text colour, unless the SVG's root sets `color`;
@@ -167,6 +169,38 @@ label. **smed draws it** from what clients send; a client sends no pictures of p
 {"type":"set_environments","environments":[{"id":"sketch","name":"Sketch","keys":{"1":"sketch.line","9":"edit.undo"}}]}
 {"type":"focus","on":true}
 ```
+
+### Commands
+
+The key assignment is the client's catalogue as smed shows it: when a key 1–12 goes down and
+the environment in use assigns a command to it, smed sends the client that has the LCD
+
+```json
+{"type":"command","id":"sketch.line","env":"sketch","key":"1","press":"short"}
+```
+
+right after the `key` event, which every client still gets. `press` is the key's (`"short"` or
+`"long"`, as with `key`); what a long press of a command key means is the client's choice. A
+client that registers commands should act on `command` and ignore `key` for 1–12. Keys without
+a command send `key` only. Switch environments with
+
+```json
+{"type":"set_environment","id":"part"}
+```
+
+### Errors
+
+A request is applied as far as it can be; what does not fit is reported with one `error`
+after it, and the connection stays:
+
+- `set_commands`: an icon `id` not sent with `set_icon` (the tile shows no icon);
+- `set_environments`: a command `id` not in the catalogue (that key stays empty), or a name in
+  `keys` that is no key (`"13"`); names of keys without a tile (`"t"`, `"v1"`) are kept quietly;
+- `set_environment`: an `id` not among the environments: nothing changes;
+- `set_icon`: SVG or PNG that does not parse, or a PNG over 512×512: the icon is not kept.
+
+Send `set_icon` before `set_commands` and the catalogue before `set_environments`, so nothing
+is reported that is only out of order.
 
 ## Example session
 
