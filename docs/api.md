@@ -151,7 +151,7 @@ label. **smed draws it** from what clients send; a client sends no pictures of p
   other key names in `keys` are kept for later versions.
 - **Icons.** SVG is drawn without text elements and without raster images inside it.
   `currentColor` is drawn in the theme's text colour, unless the SVG's root sets `color`;
-  icons with fixed colours keep them. A PNG is scaled to fit. Icons are square-fitted and
+  icons with fixed colours keep them. A PNG is scaled to fit; it may be at most 512×512 pixels. Icons are square-fitted and
   belong to the connection: send them before the commands that use them, and again after a
   reconnect. An icon that does not parse gets an `error`.
 - **Replace, not patch.** Each `set_commands`, `set_environments` replaces that part
@@ -193,4 +193,8 @@ With API 2:
 < {"type":"lcd","owner":true,"brightness":100,"text_size":"small","theme":"light"}
 > {"type":"set_lcd","brightness":40}
 < {"type":"lcd","owner":true,"brightness":40,"text_size":"small","theme":"light"}
+> {"type":"get_screen"}
+< {"type":"screen","png":"iVBORw0KGgo="}
 ```
+
+(The `png` is shortened here; it is a whole 640×150 PNG.)

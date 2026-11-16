@@ -31,6 +31,8 @@ const TILE_HEIGHT: f32 = 62.0;
 const LINE: f32 = 1.0;
 const BLOCK_GAP: f32 = 12.0;
 const ELLIPSIS: &str = "…";
+/// A label takes at most two lines, then ends in "…".
+const LABEL_LINES: usize = 2;
 
 /// An icon a client sent (`set_icon`), checked when it arrived.
 #[derive(Debug)]
@@ -51,10 +53,29 @@ impl Icon {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data.trim())
             .map_err(|e| format!("invalid base64: {e}"))?;
+        // The size from the header first: decoding allocates width × height × 4 bytes.
+        let (width, height) = png_size(&bytes).ok_or("invalid PNG: no header")?;
+        if width > MAX_ICON_SIDE || height > MAX_ICON_SIDE {
+            return Err(format!(
+                "PNG {width}×{height} is larger than {MAX_ICON_SIDE}×{MAX_ICON_SIDE}"
+            ));
+        }
         Pixmap::decode_png(&bytes)
             .map(Self::Png)
             .map_err(|e| format!("invalid PNG: {e}"))
     }
+}
+
+/// The largest PNG icon side: tiles are 104×62, so this is generous.
+pub const MAX_ICON_SIDE: u32 = 512;
+
+/// Width and height from a PNG's IHDR chunk (it follows the 8-byte signature).
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let at = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    Some((at(16), at(20)))
 }
 
 /// One function key's tile.
@@ -129,9 +150,6 @@ struct Metrics {
     line: f32,
     icon: f32,
     header_icon: f32,
-    /// Label lines in a tile with an icon, and without.
-    lines_with_icon: usize,
-    lines_without_icon: usize,
 }
 
 fn metrics(size: TextSize) -> Metrics {
@@ -142,8 +160,6 @@ fn metrics(size: TextSize) -> Metrics {
             line: 14.0,
             icon: 24.0,
             header_icon: 20.0,
-            lines_with_icon: 2,
-            lines_without_icon: 3,
         },
         TextSize::Large => Metrics {
             title: 16.0,
@@ -151,8 +167,6 @@ fn metrics(size: TextSize) -> Metrics {
             line: 18.0,
             icon: 22.0,
             header_icon: 22.0,
-            lines_with_icon: 2,
-            lines_without_icon: 3,
         },
     }
 }
@@ -254,12 +268,7 @@ fn draw_tile(
 ) {
     let (x, y, w, h) = rect;
     fill(canvas, rect, colors.tile);
-    let max_lines = if tile.icon.is_some() {
-        sizes.lines_with_icon
-    } else {
-        sizes.lines_without_icon
-    };
-    let lines = wrap(font, sizes.label, &tile.label, w - 6.0, max_lines);
+    let lines = label_lines(font, sizes, &tile.label, w);
     let icon_height = if tile.icon.is_some() {
         sizes.icon + 2.0
     } else {
@@ -290,6 +299,11 @@ fn draw_tile(
         );
         top += sizes.line;
     }
+}
+
+/// A tile's label as drawn: at most [`LABEL_LINES`] lines inside a tile `width` wide.
+fn label_lines(font: &FontRef, sizes: &Metrics, label: &str, width: f32) -> Vec<String> {
+    wrap(font, sizes.label, label, width - 6.0, LABEL_LINES)
 }
 
 fn color(rgb: [u8; 3]) -> tiny_skia::Color {
@@ -567,6 +581,53 @@ mod tests {
         let long = wrap(&font, 12.0, "Antidisestablishment", 40.0, 3);
         assert!(long.len() >= 2, "a long word is split: {long:?}");
         assert!(wrap(&font, 12.0, "   ", 40.0, 2).is_empty());
+    }
+
+    #[test]
+    fn a_tile_label_takes_at_most_two_lines() {
+        let font = regular();
+        let long = "A label far too long for one tile, even for two of them";
+        for size in [TextSize::Small, TextSize::Large] {
+            let lines = label_lines(&font, &metrics(size), long, TILE_WIDTH);
+            assert_eq!(lines.len(), 2, "{size:?}: {lines:?}");
+            assert!(lines[1].ends_with(ELLIPSIS), "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn large_text_draws_bigger_labels_than_small() {
+        let font = regular();
+        let (small, large) = (metrics(TextSize::Small), metrics(TextSize::Large));
+        assert!(large.label > small.label && large.title > small.title);
+        let width = |m: &Metrics| text_width(&font, m.label, "Rectangle");
+        assert!(width(&large) > width(&small));
+        let mut page = Page::placeholder();
+        page.tiles[0] = Some(Tile {
+            label: "Rectangle".into(),
+            icon: None,
+        });
+        let draw = |text_size| {
+            render(
+                &page,
+                &LcdSettings {
+                    text_size,
+                    ..LcdSettings::default()
+                },
+            )
+        };
+        assert_ne!(draw(TextSize::Small).data(), draw(TextSize::Large).data());
+    }
+
+    #[test]
+    fn a_png_icon_too_large_is_refused_before_decoding() {
+        // A valid header claiming 100000×100000, no image data: refused from the header alone.
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&100_000_u32.to_be_bytes());
+        png.extend_from_slice(&100_000_u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+        let error = Icon::from_png_base64(&data).unwrap_err();
+        assert!(error.contains("larger than 512×512"), "{error}");
     }
 
     #[test]

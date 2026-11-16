@@ -71,7 +71,8 @@ smectl demo-page  # a sample page on the LCD while it runs
 smectl screenshot lcd.png   # what smed draws on the LCD now, as PNG
 ```
 
-Settings that last go in `~/.config/smed/config.toml` (read at start, never written by smed):
+Settings that last go in `~/.config/smed/config.toml` (read at start, never written by smed;
+`smed --config PATH` reads another file):
 
 ```toml
 [lcd]

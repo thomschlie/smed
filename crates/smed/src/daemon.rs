@@ -299,7 +299,8 @@ impl Shared {
                 if line.trim().is_empty() {
                     continue;
                 }
-                if line.len() > MAX_MESSAGE {
+                // API 1 lines are as before; the limit came with the icons of API 2.
+                if api >= API_LCD && line.len() > MAX_MESSAGE {
                     let message = ServerMessage::Error {
                         message: format!("message longer than {MAX_MESSAGE} bytes"),
                     };
@@ -330,6 +331,8 @@ impl Shared {
                     }
                     // API 1 knows none of the other messages.
                     Ok(_) => {}
+                    // To an API 1 client an API 2 type is unknown, so ignored, as in v1.
+                    Err(_) if api < API_LCD && is_api_2_type(&line) => {}
                     Err(error) => {
                         let message = ServerMessage::Error {
                             message: format!("invalid message: {error}"),
@@ -413,6 +416,22 @@ impl Shared {
         }
         Ok(())
     }
+}
+
+/// Whether `line` is one of the message types API 2 added.
+fn is_api_2_type(line: &str) -> bool {
+    const TYPES: [&str; 6] = [
+        "set_icon",
+        "set_commands",
+        "set_environments",
+        "focus",
+        "set_lcd",
+        "get_screen",
+    ];
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| value.get("type")?.as_str().map(|t| TYPES.contains(&t)))
+        .unwrap_or(false)
 }
 
 /// `screen`: `page` drawn as it goes to the device, as a base64 PNG.
@@ -658,6 +677,8 @@ mod tests {
             &[
                 r#"{"type":"set_lcd","brightness":10}"#,
                 r#"{"type":"focus","on":true}"#,
+                r#"{"type":"set_lcd","theme":"blue"}"#,
+                &format!(r#"{{"type":"set_icon","id":"big","png":"{}"}}"#, "A".repeat(MAX_MESSAGE)),
             ],
         );
         assert!(seen.is_empty(), "ignored: {seen:?}");
@@ -826,6 +847,64 @@ mod tests {
             image.data(),
             expected.data(),
             "the same pixels as the frame"
+        );
+    }
+
+    /// The orange disc of `smectl demo-page`, 32×32.
+    const DISC_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAvklEQVR42t2XzQ2AIAxGWYAVnIYd2IEduoEHp2EHtnEDrQlcCII/0FYP70I03xMEWrXOk+JEfVFAIwZxCERcHNMjBSzika2Bj892Ezi+LFwIzgnx3VcC8CA4B54KLB3CE8tdAegYXp2JszXfBmGuCISBAqElYAeGJ2xNwBMI+DMBTRCe0CUBQyhgSgKOUMCVBIBQAEQKsC8B+0/Ivg3ZDyIRRzH7ZSTiOmYvSESUZCKKUhFluYjGRExr9s/ueAdSsKMVaIRG/QAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn a_png_icon_is_taken_and_drawn_on_its_tile() {
+        let shared = Shared::new();
+        let (mut client, mut reader) = hello(&shared, 2, "png");
+        let seen = exchange(
+            &mut client,
+            &mut reader,
+            &[
+                &format!(r#"{{"type":"set_icon","id":"disc","png":"{DISC_PNG}"}}"#),
+                r#"{"type":"set_commands","app":{"name":"P"},"commands":[{"id":"c","label":"Disc","icon":"disc"}]}"#,
+                r#"{"type":"set_environments","environments":[{"id":"e","name":"E","keys":{"1":"c"}}]}"#,
+                r#"{"type":"focus","on":true}"#,
+            ],
+        );
+        assert_eq!(seen, vec![lcd(true, 100)], "no error for the PNG");
+        let page = shared.state().lcd.page();
+        assert!(matches!(
+            page.tiles[0].as_ref().and_then(|t| t.icon.as_deref()),
+            Some(Icon::Png(_))
+        ));
+        // The disc's orange is in the drawn tile.
+        let canvas = render::render(&page, &LcdSettings::default());
+        let (x, y, w, h) = render::tile_rect(0);
+        let orange = (x as u32..(x + w) as u32)
+            .flat_map(|px| (y as u32..(y + h) as u32).map(move |py| (px, py)))
+            .filter_map(|(px, py)| canvas.pixel(px, py))
+            .any(|p| p.red() > 0xe0 && (0x70..0xa0).contains(&p.green()) && p.blue() < 0x40);
+        assert!(orange, "the PNG is drawn");
+    }
+
+    #[test]
+    fn an_otherwise_valid_message_over_256_kib_is_refused() {
+        let shared = Shared::new();
+        let (mut client, mut reader) = hello(&shared, 2, "big");
+        let label = "x".repeat(MAX_MESSAGE);
+        let big = format!(
+            r#"{{"type":"set_commands","app":{{"name":"Big"}},"commands":[{{"id":"c","label":"{label}"}}]}}"#
+        );
+        let seen = exchange(&mut client, &mut reader, &[&big]);
+        assert_eq!(
+            seen,
+            vec![ServerMessage::Error {
+                message: format!("message longer than {MAX_MESSAGE} bytes")
+            }]
+        );
+        assert_eq!(shared.state().lcd.page().title, "smed", "not applied");
+        let id = shared.state().clients[0].id;
+        shared.state().lcd.focus(id, true);
+        assert_eq!(
+            shared.state().lcd.page().title,
+            "big",
+            "the catalogue was not taken"
         );
     }
 }

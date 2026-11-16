@@ -396,6 +396,14 @@ mod tests {
             },
         );
         round_trip_server(
+            r#"{"type":"state","device":null,"lock":false,"lcd":false}"#,
+            ServerMessage::State {
+                device: None,
+                lock: false,
+                lcd: Some(false),
+            },
+        );
+        round_trip_server(
             r#"{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"light"}"#,
             ServerMessage::Lcd {
                 owner: false,
@@ -415,6 +423,22 @@ mod tests {
                 }),
                 lock: false,
                 lcd: None,
+            },
+        );
+        round_trip_server(
+            r#"{"type":"hello","api":2,"server":"smed 0.2.0"}"#,
+            ServerMessage::Hello {
+                api: 2,
+                server: "smed 0.2.0".into(),
+            },
+        );
+        round_trip_server(
+            r#"{"type":"lcd","owner":true,"brightness":40,"text_size":"small","theme":"light"}"#,
+            ServerMessage::Lcd {
+                owner: true,
+                brightness: 40,
+                text_size: TextSize::Small,
+                theme: Theme::Light,
             },
         );
         round_trip_server(
@@ -504,6 +528,13 @@ mod tests {
                             .map(|(k, v)| (k.into(), v.into()))
                             .collect(),
                     }],
+                },
+            ),
+            (
+                r#"{"type":"hello","api":2,"client":"solidcraft"}"#,
+                ClientMessage::Hello {
+                    api: 2,
+                    client: "solidcraft".into(),
                 },
             ),
             (r#"{"type":"focus","on":true}"#, ClientMessage::Focus { on: true }),
