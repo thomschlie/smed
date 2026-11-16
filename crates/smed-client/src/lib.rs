@@ -428,14 +428,47 @@ pub const MAX_SERVER_LINE: usize = 1024 * 1024;
 /// assert!(lines.next_message()?.is_none()); // the rest of the line is still to come
 /// lines.push(b"\"on\":true}\n");
 /// assert_eq!(lines.next_message()?, Some(ServerMessage::Lock { on: true }));
-/// # Ok::<(), std::io::Error>(())
+/// # Ok::<(), smed_client::LineError>(())
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct Lines {
     pending: Vec<u8>,
+    /// How many bytes at the start of `pending` are known to hold no newline.
+    scanned: usize,
+}
+
+/// What [`Lines::next_message`] found wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LineError {
+    /// A line that is not a message (not valid JSON, or a known type with wrong fields). The
+    /// line is dropped; the following ones still read.
+    Invalid { reason: String },
+    /// A line longer than [`MAX_SERVER_LINE`]: everything pushed so far is dropped. That is no
+    /// smed; close the connection.
+    Overlong,
+}
+
+impl std::fmt::Display for LineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid { reason } => write!(f, "a line that is not a message: {reason}"),
+            Self::Overlong => write!(f, "a line longer than {MAX_SERVER_LINE} bytes"),
+        }
+    }
+}
+
+impl std::error::Error for LineError {}
+
+/// As `InvalidData`, with the [`LineError`] inside (`get_ref` and `downcast_ref` give it back).
+impl From<LineError> for io::Error {
+    fn from(error: LineError) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, error)
+    }
 }
 
 impl Lines {
+    /// A decoder with nothing pushed yet.
     pub fn new() -> Self {
         Self::default()
     }
@@ -446,31 +479,40 @@ impl Lines {
     }
 
     /// The next complete message, or `None` until more bytes are pushed. Blank lines and
-    /// message types this crate does not know are skipped. A line that is not valid JSON is an
-    /// `InvalidData` error (the line is dropped, the following ones still read); a line longer
-    /// than [`MAX_SERVER_LINE`] is an `InvalidData` error too, and everything pushed so far is
-    /// dropped: that is no smed, and the connection should be closed.
-    pub fn next_message(&mut self) -> io::Result<Option<ServerMessage>> {
+    /// message types this crate does not know are skipped. Each call looks only at bytes it has
+    /// not looked at yet, so a long line read in many parts costs no more than read in one.
+    pub fn next_message(&mut self) -> Result<Option<ServerMessage>, LineError> {
         loop {
-            let Some(end) = self.pending.iter().position(|&byte| byte == b'\n') else {
+            let found = self.pending[self.scanned..]
+                .iter()
+                .position(|&byte| byte == b'\n');
+            let Some(end) = found.map(|at| self.scanned + at) else {
+                self.scanned = self.pending.len();
                 if self.pending.len() > MAX_SERVER_LINE {
                     self.pending.clear();
-                    return Err(overlong());
+                    self.scanned = 0;
+                    return Err(LineError::Overlong);
                 }
                 return Ok(None);
             };
             if end > MAX_SERVER_LINE {
                 self.pending.clear();
-                return Err(overlong());
+                self.scanned = 0;
+                return Err(LineError::Overlong);
             }
             let line: Vec<u8> = self.pending.drain(..=end).collect();
+            self.scanned = 0;
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
             match serde_json::from_slice::<ServerMessage>(&line) {
                 Ok(ServerMessage::Unknown) => continue,
                 Ok(message) => return Ok(Some(message)),
-                Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+                Err(error) => {
+                    return Err(LineError::Invalid {
+                        reason: error.to_string(),
+                    });
+                }
             }
         }
     }
@@ -479,13 +521,6 @@ impl Lines {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
-}
-
-fn overlong() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("a line longer than {MAX_SERVER_LINE} bytes"),
-    )
 }
 
 /// A connection to smed, after the handshake.
@@ -1015,7 +1050,7 @@ mod tests {
         let mut lines = Lines::new();
         lines.push(b"not json\n{\"type\":\"lock\",\"on\":true}\n");
         let error = lines.next_message().unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(error, LineError::Invalid { .. }), "{error:?}");
         assert_eq!(
             lines.next_message().unwrap(),
             Some(ServerMessage::Lock { on: true })
@@ -1038,18 +1073,67 @@ mod tests {
         ));
         // One byte more, still without a newline: refused, and everything dropped.
         lines.push(&vec![b'x'; MAX_SERVER_LINE + 1]);
-        assert_eq!(
-            lines.next_message().unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert_eq!(lines.next_message().unwrap_err(), LineError::Overlong);
         assert!(lines.is_empty());
         // One byte more with its newline in the same push: refused too.
         let mut over = vec![b' '; MAX_SERVER_LINE + 1];
         over.push(b'\n');
         lines.push(&over);
+        assert_eq!(lines.next_message().unwrap_err(), LineError::Overlong);
+    }
+
+    #[test]
+    fn lines_looks_at_each_byte_once() {
+        // The longest line, pushed in 4 KiB parts: each call looks only at the new part.
+        let mut longest = br#"{"type":"screen","png":""#.to_vec();
+        longest.resize(MAX_SERVER_LINE - 2, b'A');
+        longest.extend_from_slice(b"\"}\n");
+        let mut lines = Lines::new();
+        for part in longest.chunks(4096) {
+            lines.push(part);
+            if lines.scanned < lines.pending.len() {
+                let before = lines.scanned;
+                let message = lines.next_message().unwrap();
+                if message.is_none() {
+                    assert_eq!(lines.scanned, lines.pending.len());
+                    assert!(before <= lines.scanned);
+                } else {
+                    assert!(matches!(message, Some(ServerMessage::Screen { .. })));
+                    assert!(lines.is_empty());
+                }
+            }
+        }
+        // After a line, the bytes behind it are looked at afresh.
+        lines.push(b"{\"type\":\"lock\",\"on\":true}\n{\"type\":\"lock\",\"on\":false}\n");
         assert_eq!(
-            lines.next_message().unwrap_err().kind(),
-            io::ErrorKind::InvalidData
+            lines.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: true })
+        );
+        assert_eq!(
+            lines.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: false })
+        );
+    }
+
+    #[test]
+    fn client_reports_line_errors_as_invalid_data_with_the_line_error_inside() {
+        let (mut client, smed) = client_pair();
+        let mut smed = smed.into_inner();
+        smed.write_all(b"not json\n").unwrap();
+        let error = client.next_message().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let inner = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<LineError>());
+        assert!(
+            matches!(inner, Some(LineError::Invalid { .. })),
+            "{error:?}"
+        );
+        smed.write_all(b"{\"type\":\"lock\",\"on\":true}\n")
+            .unwrap();
+        assert_eq!(
+            client.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: true })
         );
     }
 
