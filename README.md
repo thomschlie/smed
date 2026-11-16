@@ -36,6 +36,8 @@ Long presses (HID report `0x1d`), the rotation-lock LED and the LCD are not hand
   text size and a dark or light theme are smed's settings.
 - Attaches no meaning to keys: what a key does is the application's choice.
 
+![The LCD as smed draws it: smectl demo-page, captured with smectl screenshot](docs/lcd-demo.png)
+
 What we know about the device's protocol is in [docs/protocol.md](docs/protocol.md).
 
 | Crate | What |
