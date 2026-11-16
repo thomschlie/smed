@@ -41,6 +41,7 @@ impl ClientPage {
             .filter(|id| !self.icons.contains_key(*id))
             .cloned()
             .collect();
+        unknown.sort();
         unknown.dedup();
         unknown
     }
@@ -432,7 +433,11 @@ mod tests {
         let env = |id: &str, name: &str, key1: &str| Environment {
             id: id.into(),
             name: name.into(),
-            keys: [("1".to_owned(), key1.to_owned())].into_iter().collect(),
+            // "t" has no tile: assigned here, it must still run nothing.
+            keys: [("1", key1), ("t", key1)]
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
         };
         lcd.set_environments(
             1,
@@ -498,13 +503,35 @@ mod tests {
         two_environments(&mut lcd);
         lcd.focus(1, true);
         assert!(lcd.command("2", Press::Short).is_none(), "unassigned");
-        assert!(lcd.command("t", Press::Short).is_none(), "no tile key");
+        assert!(
+            lcd.command("t", Press::Short).is_none(),
+            "\"t\" is assigned, but has no tile: no command"
+        );
         lcd.connect(2, "b");
         lcd.focus(2, true);
         assert!(
             lcd.command("1", Press::Short).is_none(),
             "the owner has nothing on 1"
         );
+    }
+
+    #[test]
+    fn a_missing_icon_is_named_once() {
+        let mut lcd = Lcd::default();
+        lcd.connect(1, "a");
+        let outcome = lcd.set_commands(
+            1,
+            App {
+                name: "A".into(),
+                icon: Some("x".into()),
+            },
+            vec![
+                command("1", "One", Some("y")),
+                command("2", "Two", Some("x")),
+                command("3", "Three", Some("y")),
+            ],
+        );
+        assert_eq!(outcome.error.as_deref(), Some("unknown icon: x, y"));
     }
 
     #[test]

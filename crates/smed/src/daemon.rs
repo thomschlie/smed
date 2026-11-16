@@ -711,6 +711,7 @@ mod tests {
                 r#"{"type":"set_lcd","brightness":10}"#,
                 r#"{"type":"focus","on":true}"#,
                 r#"{"type":"set_lcd","theme":"blue"}"#,
+                r#"{"type":"set_environment"}"#,
                 &format!(
                     r#"{{"type":"set_icon","id":"big","png":"{}"}}"#,
                     "A".repeat(MAX_MESSAGE)
