@@ -42,7 +42,7 @@ What we know about the device's protocol is in [docs/protocol.md](docs/protocol.
 | --- | --- |
 | `crates/smed` | the daemon |
 | `crates/smed-client` | API message types, key table and a blocking client, for Rust applications |
-| `crates/smectl` | command line: `smectl monitor`, `smectl state`, `smectl lock on\|off`, `smectl lcd`, `smectl demo-page` |
+| `crates/smectl` | command line: `smectl monitor`, `smectl state`, `smectl lock on\|off`, `smectl lcd`, `smectl demo-page`, `smectl screenshot` |
 
 ## Install from source
 
@@ -66,6 +66,7 @@ systemctl --user enable --now smed
 smectl monitor    # every event as a JSON line
 smectl lcd --brightness 60 --theme light   # until smed restarts
 smectl demo-page  # a sample page on the LCD while it runs
+smectl screenshot lcd.png   # what smed draws on the LCD now, as PNG
 ```
 
 Settings that last go in `~/.config/smed/config.toml` (read at start, never written by smed):
@@ -74,7 +75,7 @@ Settings that last go in `~/.config/smed/config.toml` (read at start, never writ
 [lcd]
 brightness = 100      # 0-100
 text_size = "small"   # or "large"
-theme = "dark"        # or "light"
+theme = "light"       # or "dark"
 ```
 
 smed and spacenavd should not both run: stop spacenavd while smed is in use

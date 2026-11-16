@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn settings_change_only_when_different() {
         let mut lcd = Lcd::default();
-        assert!(!lcd.set(Some(100), None, Some(Theme::Dark)));
+        assert!(!lcd.set(Some(100), None, Some(Theme::Light)));
         assert!(lcd.set(Some(250), Some(TextSize::Large), None));
         assert_eq!(lcd.settings().brightness, 100);
         assert_eq!(lcd.settings().text_size, TextSize::Large);

@@ -5,6 +5,7 @@ mod demo;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use base64::Engine;
 use smed_client::{Client, ClientMessage, ServerMessage, TextSize, Theme, to_line};
 
 const USAGE: &str = "usage: smectl [--socket PATH] COMMAND\n\
@@ -15,7 +16,9 @@ commands:\n\
   lock on|off    switch the rotation lock\n\
   lcd [--brightness 0-100] [--text-size small|large] [--theme dark|light]\n\
                  print the LCD settings, or change them until smed restarts\n\
-  demo-page      show a demo page on the LCD until interrupted";
+  demo-page      show a demo page on the LCD until interrupted\n\
+  screenshot FILE.png\n\
+                 save what smed draws on the LCD now (works without the device)";
 
 fn main() -> ExitCode {
     match run() {
@@ -100,6 +103,26 @@ fn run() -> Result<(), String> {
                 match client.next_message().map_err(|e| e.to_string())? {
                     Some(message) => print!("{}", to_line(&message)),
                     None => return Err("smed closed the connection".into()),
+                }
+            }
+        }
+        ["screenshot", path] => {
+            need_lcd_api(&client)?;
+            client
+                .send(&ClientMessage::GetScreen)
+                .map_err(|e| e.to_string())?;
+            loop {
+                match next(&mut client)? {
+                    ServerMessage::Screen { png } => {
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(png)
+                            .map_err(|e| format!("smed sent invalid base64: {e}"))?;
+                        std::fs::write(path, bytes).map_err(|e| format!("{path}: {e}"))?;
+                        println!("{path}");
+                        return Ok(());
+                    }
+                    ServerMessage::Error { message } => return Err(message),
+                    _ => {}
                 }
             }
         }

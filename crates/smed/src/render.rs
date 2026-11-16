@@ -589,7 +589,10 @@ mod tests {
 
     #[test]
     fn a_page_draws_header_tiles_icons_and_empty_keys() {
-        let settings = LcdSettings::default();
+        let settings = LcdSettings {
+            theme: Theme::Dark,
+            ..LcdSettings::default()
+        };
         let colors = palette(Theme::Dark);
         let mut page = Page::placeholder();
         page.title = "Demo".into();

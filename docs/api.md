@@ -34,7 +34,7 @@ smed answers with its own `hello`, then a `state` message, and with API 2 an `lc
 ```json
 {"type":"hello","api":2,"server":"smed 0.2.0"}
 {"type":"state","device":{"vid":9583,"pid":50739,"name":"3Dconnexion SpaceMouse Enterprise","firmware":"4.42"},"lock":false,"lcd":true}
-{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"dark"}
+{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"light"}
 ```
 
 With `"api":1` the same handshake is `hello` and `state` without the `lcd` field:
@@ -61,7 +61,8 @@ With `"api":1` the same handshake is `hello` and `state` without the `lcd` field
 | `motion` | `t` [x, y, z], `r` [rx, ry, rz] | one motion report, int16 each, ~60 Hz while the cap moves |
 | `key` | `key`, `id`, `press`, `down` | a key went down or up |
 | `lock` | `on` (bool) | the rotation lock changed (Lock key or a client's `set_lock`) |
-| `lcd` | `owner` (bool), `brightness` (0–100), `text_size` (`"small"`/`"large"`), `theme` (`"dark"`/`"light"`) | *API 2.* `owner`: this connection has the LCD. Sent after the handshake, when the owner or a setting changes, and in answer to every `set_lcd` |
+| `lcd` | `owner` (bool), `brightness` (0–100), `text_size` (`"small"`/`"large"`), `theme` (`"light"`/`"dark"`) | *API 2.* `owner`: this connection has the LCD. Sent after the handshake, when the owner or a setting changes, and in answer to every `set_lcd` |
+| `screen` | `png` (base64) | *API 2.* The answer to `get_screen`: the page smed shows now, drawn as it goes to the LCD (also without a device), as a 640×150 PNG |
 | `error` | `message` | the last request failed |
 
 `device` object: `vid`, `pid` (numbers), `name` (string, the kernel's HID name), `firmware`
@@ -130,6 +131,7 @@ and a re-plug of the device, but not a restart of smed.
 | `set_environments` | `environments` [{`id`, `name`, `keys` {key name: command `id`}}] | *API 2.* The environments and which command each key runs in them; replaces the previous ones |
 | `focus` | `on` (bool) | *API 2.* This client's window got or lost the input focus |
 | `set_lcd` | `brightness`?, `text_size`?, `theme`? | *API 2.* Change the LCD settings, for every client, until smed restarts; smed answers with `lcd` |
+| `get_screen` | — | *API 2.* smed answers with `screen` |
 
 ## The LCD (API 2)
 
@@ -186,9 +188,9 @@ With API 2:
 > {"type":"hello","api":2,"client":"smectl"}
 < {"type":"hello","api":2,"server":"smed 0.2.0"}
 < {"type":"state","device":null,"lock":false,"lcd":false}
-< {"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"dark"}
+< {"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"light"}
 > {"type":"focus","on":true}
-< {"type":"lcd","owner":true,"brightness":100,"text_size":"small","theme":"dark"}
+< {"type":"lcd","owner":true,"brightness":100,"text_size":"small","theme":"light"}
 > {"type":"set_lcd","brightness":40}
-< {"type":"lcd","owner":true,"brightness":40,"text_size":"small","theme":"dark"}
+< {"type":"lcd","owner":true,"brightness":40,"text_size":"small","theme":"light"}
 ```

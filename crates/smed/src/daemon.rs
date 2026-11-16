@@ -6,6 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
+use base64::Engine;
 use smed_client::{API_VERSION, ClientMessage, DeviceInfo, MAX_MESSAGE, ServerMessage, to_line};
 
 use crate::config::LcdSettings;
@@ -314,6 +315,13 @@ impl Shared {
                     Ok(ClientMessage::GetState) => {
                         writer.write_all(to_line(&state.state_message(api)).as_bytes())?;
                     }
+                    Ok(ClientMessage::GetScreen) if api >= API_LCD => {
+                        // Drawing takes a few milliseconds: not under the lock.
+                        let snapshot = (state.lcd.page(), state.lcd.settings());
+                        drop(state);
+                        let message = screen_message(&snapshot.0, &snapshot.1);
+                        writer.write_all(to_line(&message).as_bytes())?;
+                    }
                     Ok(message) if api >= API_LCD => {
                         if let Err(message) = self.lcd_request(&mut state, id, message) {
                             let error = ServerMessage::Error { message };
@@ -397,12 +405,25 @@ impl Shared {
             ClientMessage::Hello { .. }
             | ClientMessage::SetLock { .. }
             | ClientMessage::GetState
+            | ClientMessage::GetScreen
             | ClientMessage::Unknown => false,
         };
         if shown {
             self.redraw(state);
         }
         Ok(())
+    }
+}
+
+/// `screen`: `page` drawn as it goes to the device, as a base64 PNG.
+fn screen_message(page: &render::Page, settings: &LcdSettings) -> ServerMessage {
+    match render::render(page, settings).encode_png() {
+        Ok(png) => ServerMessage::Screen {
+            png: base64::engine::general_purpose::STANDARD.encode(png),
+        },
+        Err(error) => ServerMessage::Error {
+            message: format!("encoding the screen: {error}"),
+        },
     }
 }
 
@@ -417,6 +438,7 @@ fn send_error(writer: &mut UnixStream, message: &str) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::device::{Fake, Written};
+    use crate::render::Page;
     use crate::usb::FakeLcd;
     use smed_client::{Press, TextSize, Theme};
 
@@ -448,7 +470,7 @@ mod tests {
             owner,
             brightness,
             text_size: TextSize::Small,
-            theme: Theme::Dark,
+            theme: Theme::Light,
         }
     }
 
@@ -688,13 +710,13 @@ mod tests {
         let seen = exchange(
             &mut a,
             &mut a_reader,
-            &[r#"{"type":"set_lcd","brightness":30,"theme":"light"}"#],
+            &[r#"{"type":"set_lcd","brightness":30,"theme":"dark"}"#],
         );
         let changed = ServerMessage::Lcd {
             owner: false,
             brightness: 30,
             text_size: TextSize::Small,
-            theme: Theme::Light,
+            theme: Theme::Dark,
         };
         assert_eq!(seen, vec![changed.clone()]);
         assert_eq!(exchange(&mut b, &mut b_reader, &[]), vec![changed.clone()]);
@@ -785,5 +807,25 @@ mod tests {
         assert!(!shared.draw());
         shared.state().lcd_sink = Some(Arc::new(FakeLcd::default()));
         assert!(shared.draw());
+    }
+
+    #[test]
+    fn get_screen_returns_the_page_as_png_without_a_device() {
+        let shared = Shared::new();
+        let (mut client, mut reader) = hello(&shared, 2, "shot");
+        let seen = exchange(&mut client, &mut reader, &[r#"{"type":"get_screen"}"#]);
+        let [ServerMessage::Screen { png }] = seen.as_slice() else {
+            panic!("{seen:?}");
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .unwrap();
+        let image = resvg::tiny_skia::Pixmap::decode_png(&bytes).unwrap();
+        let expected = render::render(&Page::placeholder(), &LcdSettings::default());
+        assert_eq!(
+            image.data(),
+            expected.data(),
+            "the same pixels as the frame"
+        );
     }
 }

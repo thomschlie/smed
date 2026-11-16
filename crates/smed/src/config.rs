@@ -5,7 +5,7 @@
 //! [lcd]
 //! brightness = 100      # 0-100
 //! text_size = "small"   # or "large"
-//! theme = "dark"        # or "light"
+//! theme = "light"       # or "dark"
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ impl Default for LcdSettings {
         Self {
             brightness: MAX_BRIGHTNESS,
             text_size: TextSize::Small,
-            theme: Theme::Dark,
+            theme: Theme::Light,
         }
     }
 }
@@ -84,7 +84,7 @@ mod tests {
             LcdSettings {
                 brightness: 100,
                 text_size: TextSize::Small,
-                theme: Theme::Dark
+                theme: Theme::Light
             }
         );
     }
@@ -92,14 +92,14 @@ mod tests {
     #[test]
     fn lcd_settings_are_read_and_brightness_is_capped() {
         let config =
-            Config::parse("[lcd]\nbrightness = 250\ntext_size = \"large\"\ntheme = \"light\"\n")
+            Config::parse("[lcd]\nbrightness = 250\ntext_size = \"large\"\ntheme = \"dark\"\n")
                 .unwrap();
         assert_eq!(
             config.lcd,
             LcdSettings {
                 brightness: 100,
                 text_size: TextSize::Large,
-                theme: Theme::Light
+                theme: Theme::Dark
             }
         );
         assert_eq!(

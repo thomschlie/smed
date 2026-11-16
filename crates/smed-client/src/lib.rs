@@ -72,8 +72,8 @@ pub enum TextSize {
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
     #[default]
-    Dark,
     Light,
+    Dark,
 }
 
 /// The application as shown in the LCD's header (`set_commands`).
@@ -144,6 +144,11 @@ pub enum ServerMessage {
         text_size: TextSize,
         theme: Theme,
     },
+    /// API 2: the answer to `get_screen`: the current LCD page as a PNG (base64), drawn as it
+    /// goes to the device.
+    Screen {
+        png: String,
+    },
     Error {
         message: String,
     },
@@ -195,6 +200,8 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<Theme>,
     },
+    /// API 2: ask for the current LCD page as a PNG; smed answers with `screen`.
+    GetScreen,
     /// A message type smed does not know (from a newer client); smed ignores it.
     #[serde(other)]
     Unknown,
@@ -389,12 +396,12 @@ mod tests {
             },
         );
         round_trip_server(
-            r#"{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"dark"}"#,
+            r#"{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"light"}"#,
             ServerMessage::Lcd {
                 owner: false,
                 brightness: 100,
                 text_size: TextSize::Small,
-                theme: Theme::Dark,
+                theme: Theme::Light,
             },
         );
         round_trip_server(
@@ -408,6 +415,12 @@ mod tests {
                 }),
                 lock: false,
                 lcd: None,
+            },
+        );
+        round_trip_server(
+            r#"{"type":"screen","png":"iVBORw0KGgo="}"#,
+            ServerMessage::Screen {
+                png: "iVBORw0KGgo=".into(),
             },
         );
         round_trip_server(
@@ -494,6 +507,7 @@ mod tests {
                 },
             ),
             (r#"{"type":"focus","on":true}"#, ClientMessage::Focus { on: true }),
+            (r#"{"type":"get_screen"}"#, ClientMessage::GetScreen),
             (
                 r#"{"type":"set_lcd","brightness":40}"#,
                 ClientMessage::SetLcd {
