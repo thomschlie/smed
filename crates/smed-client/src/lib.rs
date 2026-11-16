@@ -45,6 +45,9 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 //!
+//! An application that reads the socket in its own loop pushes what it reads into a [`Lines`]
+//! decoder instead, which hands out whole messages.
+//!
 //! The enums and structs are `#[non_exhaustive]`, so later API versions can add message types,
 //! values, and fields of `App`, `Command`, `Environment` and `DeviceInfo` without breaking your
 //! code: match messages with a `_` arm and their fields with `..`, build the structs with their
@@ -63,7 +66,7 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -409,9 +412,85 @@ pub fn to_line<T: Serialize>(message: &T) -> String {
     line
 }
 
+/// The longest line [`Lines`] accepts from smed. smed's longest, a `screen` with the LCD page as
+/// a PNG, stays well below it.
+pub const MAX_SERVER_LINE: usize = 1024 * 1024;
+
+/// Splits what smed sends into messages, without doing any I/O: for an application that reads
+/// the socket in its own loop (a read timeout, other work between reads). [`Client`] reads
+/// through it too.
+///
+/// ```
+/// use smed_client::{Lines, ServerMessage};
+///
+/// let mut lines = Lines::new();
+/// lines.push(br#"{"type":"lock","#);
+/// assert!(lines.next_message()?.is_none()); // the rest of the line is still to come
+/// lines.push(b"\"on\":true}\n");
+/// assert_eq!(lines.next_message()?, Some(ServerMessage::Lock { on: true }));
+/// # Ok::<(), std::io::Error>(())
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct Lines {
+    pending: Vec<u8>,
+}
+
+impl Lines {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds bytes read from smed's socket.
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+    }
+
+    /// The next complete message, or `None` until more bytes are pushed. Blank lines and
+    /// message types this crate does not know are skipped. A line that is not valid JSON is an
+    /// `InvalidData` error (the line is dropped, the following ones still read); a line longer
+    /// than [`MAX_SERVER_LINE`] is an `InvalidData` error too, and everything pushed so far is
+    /// dropped: that is no smed, and the connection should be closed.
+    pub fn next_message(&mut self) -> io::Result<Option<ServerMessage>> {
+        loop {
+            let Some(end) = self.pending.iter().position(|&byte| byte == b'\n') else {
+                if self.pending.len() > MAX_SERVER_LINE {
+                    self.pending.clear();
+                    return Err(overlong());
+                }
+                return Ok(None);
+            };
+            if end > MAX_SERVER_LINE {
+                self.pending.clear();
+                return Err(overlong());
+            }
+            let line: Vec<u8> = self.pending.drain(..=end).collect();
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            match serde_json::from_slice::<ServerMessage>(&line) {
+                Ok(ServerMessage::Unknown) => continue,
+                Ok(message) => return Ok(Some(message)),
+                Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+            }
+        }
+    }
+
+    /// Whether part of a line is waiting for the rest.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
+fn overlong() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("a line longer than {MAX_SERVER_LINE} bytes"),
+    )
+}
+
 /// A connection to smed, after the handshake.
 pub struct Client {
-    reader: BufReader<UnixStream>,
+    lines: Lines,
     writer: UnixStream,
     /// The API version both sides agreed on.
     pub api: u32,
@@ -430,9 +509,8 @@ impl Client {
     /// Connects to smed at `path` and introduces itself as `client`.
     pub fn connect_to(path: &Path, client: &str) -> io::Result<Self> {
         let writer = UnixStream::connect(path)?;
-        let reader = BufReader::new(writer.try_clone()?);
         let mut this = Self {
-            reader,
+            lines: Lines::new(),
             writer,
             api: 0,
             server: String::new(),
@@ -537,21 +615,20 @@ impl Client {
     }
 
     /// The next message, blocking; `None` once smed closed the connection. Unknown message
-    /// types are skipped; a line that is not valid JSON is an error.
+    /// types are skipped; a line that is not valid JSON is an error (see [`Lines`]). With a read
+    /// timeout on [`Client::stream`], a timeout is returned as the error it is (`WouldBlock` or
+    /// `TimedOut`) and a line it split is kept: the next call goes on with it.
     pub fn next_message(&mut self) -> io::Result<Option<ServerMessage>> {
-        let mut line = String::new();
+        let mut chunk = [0_u8; 4096];
         loop {
-            line.clear();
-            if self.reader.read_line(&mut line)? == 0 {
-                return Ok(None);
+            if let Some(message) = self.lines.next_message()? {
+                return Ok(Some(message));
             }
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<ServerMessage>(&line) {
-                Ok(ServerMessage::Unknown) => continue,
-                Ok(message) => return Ok(Some(message)),
-                Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+            match (&self.writer).read(&mut chunk) {
+                Ok(0) => return Ok(None),
+                Ok(len) => self.lines.push(&chunk[..len]),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
             }
         }
     }
@@ -789,18 +866,19 @@ mod tests {
     }
 
     /// A client on one end of a socket pair, and the other end as smed.
-    fn client_pair() -> (Client, BufReader<UnixStream>) {
+    fn client_pair() -> (Client, std::io::BufReader<UnixStream>) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let client = Client {
-            reader: BufReader::new(ours.try_clone().unwrap()),
+            lines: Lines::new(),
             writer: ours,
             api: API_VERSION,
             server: String::new(),
         };
-        (client, BufReader::new(theirs))
+        (client, std::io::BufReader::new(theirs))
     }
 
-    fn sent(smed: &mut BufReader<UnixStream>) -> String {
+    fn sent(smed: &mut std::io::BufReader<UnixStream>) -> String {
+        use std::io::BufRead;
         let mut line = String::new();
         smed.read_line(&mut line).unwrap();
         line.trim_end().to_owned()
@@ -886,6 +964,92 @@ mod tests {
                 name: "SpaceMouse".into(),
                 firmware: Some("4.42".into()),
             }
+        );
+    }
+
+    #[test]
+    fn a_line_split_by_a_read_timeout_arrives_whole() {
+        let (mut client, smed) = client_pair();
+        let mut smed = smed.into_inner();
+        client
+            .stream()
+            .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+            .unwrap();
+        smed.write_all(br#"{"type":"lock","#).unwrap();
+        let timeout = client.next_message().unwrap_err();
+        assert!(matches!(
+            timeout.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ));
+        smed.write_all(b"\"on\":true}\n").unwrap();
+        assert_eq!(
+            client.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: true })
+        );
+        drop(smed);
+        assert_eq!(client.next_message().unwrap(), None);
+    }
+
+    #[test]
+    fn lines_hands_out_whole_messages_in_order() {
+        let mut lines = Lines::new();
+        assert!(lines.is_empty());
+        lines.push(b"\n  \n{\"type\":\"lock\",\"on\":true}\n{\"type\":\"osd\"}\n{\"type\":\"lo");
+        assert_eq!(
+            lines.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: true })
+        );
+        // The unknown type is skipped; the rest of the last line is still to come.
+        assert_eq!(lines.next_message().unwrap(), None);
+        assert!(!lines.is_empty());
+        lines.push(b"ck\",\"on\":false}\n");
+        assert_eq!(
+            lines.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: false })
+        );
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn lines_reports_invalid_json_and_reads_on() {
+        let mut lines = Lines::new();
+        lines.push(b"not json\n{\"type\":\"lock\",\"on\":true}\n");
+        let error = lines.next_message().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            lines.next_message().unwrap(),
+            Some(ServerMessage::Lock { on: true })
+        );
+    }
+
+    #[test]
+    fn lines_refuses_an_overlong_line() {
+        let mut lines = Lines::new();
+        // Exactly the limit, then the newline: accepted.
+        let mut longest = br#"{"type":"screen","png":""#.to_vec();
+        longest.resize(MAX_SERVER_LINE - 2, b'A');
+        longest.extend_from_slice(b"\"}");
+        assert_eq!(longest.len(), MAX_SERVER_LINE);
+        lines.push(&longest);
+        lines.push(b"\n");
+        assert!(matches!(
+            lines.next_message().unwrap(),
+            Some(ServerMessage::Screen { .. })
+        ));
+        // One byte more, still without a newline: refused, and everything dropped.
+        lines.push(&vec![b'x'; MAX_SERVER_LINE + 1]);
+        assert_eq!(
+            lines.next_message().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(lines.is_empty());
+        // One byte more with its newline in the same push: refused too.
+        let mut over = vec![b' '; MAX_SERVER_LINE + 1];
+        over.push(b'\n');
+        lines.push(&over);
+        assert_eq!(
+            lines.next_message().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
         );
     }
 

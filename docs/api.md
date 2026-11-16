@@ -188,6 +188,10 @@ a command send `key` only. Switch environments with
 {"type":"set_environment","id":"part"}
 ```
 
+A client that keeps a key assignment of its own (one its users edit) can use the LCD for
+display only: it sends its assignment as an environment, so the keys show its labels, runs its
+jobs from `key` as before, and ignores `command`.
+
 ### Errors
 
 A request is applied as far as it can be; what does not fit is reported with one `error`

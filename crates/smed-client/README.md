@@ -47,6 +47,10 @@ without breaking your code. Match messages with a `_` arm and `..`, build the st
 `new`, and send through the `Client` methods. A new field in a message variant still needs a
 new minor version of this crate.
 
+An application that reads the socket in its own loop (with a read timeout, or other work between
+reads) pushes what it reads into a `Lines` decoder, which hands out whole messages; `Client`
+reads through it too.
+
 Not affiliated with or endorsed by 3Dconnexion.
 
 ## Licence
