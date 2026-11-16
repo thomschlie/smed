@@ -6,14 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use smed::config::{self, Config};
 use smed::daemon::Shared;
 use smed::device::{self, Hidraw};
+use smed::usb::{LcdSink, UsbLcd};
 
 /// How often smed looks for the device while it is absent.
 const RESCAN: Duration = Duration::from_secs(1);
 
-const USAGE: &str = "usage: smed [--socket PATH]\n\
-                     Listens on $XDG_RUNTIME_DIR/smed/api.sock unless --socket is given.";
+const USAGE: &str = "usage: smed [--socket PATH] [--config PATH]\n\
+                     Listens on $XDG_RUNTIME_DIR/smed/api.sock unless --socket is given;\n\
+                     reads $XDG_CONFIG_HOME/smed/config.toml unless --config is given.";
 
 fn main() {
     if let Err(message) = run() {
@@ -24,10 +27,12 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut socket = None;
+    let mut config_path = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
+            "--config" => config_path = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "--version" => {
                 println!("smed {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
@@ -50,7 +55,18 @@ fn run() -> Result<(), String> {
         socket.display()
     );
 
-    let shared = Shared::new();
+    // A broken config file must not cost the user the device: say so, use the defaults.
+    let config = match config_path.or_else(config::default_path) {
+        Some(path) => Config::load(&path).unwrap_or_else(|error| {
+            eprintln!("smed: config: {error}; using the defaults");
+            Config::default()
+        }),
+        None => Config::default(),
+    };
+
+    let shared = Shared::with_settings(config.lcd);
+    let drawing = shared.clone();
+    std::thread::spawn(move || drawing.run_lcd());
     let accepting = shared.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -108,7 +124,8 @@ fn run_devices(shared: &Arc<Shared>) -> Result<(), String> {
                     found.info.name,
                     found.info.firmware.as_deref().unwrap_or("unknown")
                 );
-                match shared.run_device(Arc::new(hidraw), found.info) {
+                let lcd = open_lcd(found.usb.as_deref());
+                match shared.run_device(Arc::new(hidraw), found.info, lcd) {
                     Ok(()) => eprintln!("smed: {node} closed"),
                     Err(error) => eprintln!("smed: {node}: {error}"),
                 }
@@ -116,5 +133,20 @@ fn run_devices(shared: &Arc<Shared>) -> Result<(), String> {
             Err(error) => eprintln!("smed: opening {node}: {error}"),
         }
         std::thread::sleep(RESCAN);
+    }
+}
+
+/// The LCD interface, or `None` with a warning: without it, motion and keys still work.
+fn open_lcd(usb: Option<&Path>) -> Option<Arc<dyn LcdSink>> {
+    let Some(usb) = usb else {
+        eprintln!("smed: warning: USB device of the SpaceMouse not found, no LCD");
+        return None;
+    };
+    match UsbLcd::open(usb) {
+        Ok(lcd) => Some(Arc::new(lcd)),
+        Err(error) => {
+            eprintln!("smed: warning: no LCD: {error}");
+            None
+        }
     }
 }

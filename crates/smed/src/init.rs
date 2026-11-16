@@ -1,6 +1,7 @@
 //! What the device needs after it appears. 3DxWare's sequence (docs/protocol.md): feature
 //! `15 64`, `11 64`, output `04 01`, feature `13 1a`, `11 64`, `14 fc ff 07 1c`. smed sends the
-//! same, with the LED report for the lock state it keeps. LCD frames come later.
+//! same, with the LED report for the lock state it keeps; the LCD thread then sends brightness
+//! and frames (daemon.rs).
 
 use std::io;
 

@@ -1,9 +1,14 @@
-# smed client API (version 1)
+# smed client API (version 2)
 
 smed owns the SpaceMouse Enterprise and reports what it does to any number of clients. This is
 smed's own API, the one that carries the whole device: every key by its 3Dx ID, short and long
-press, and the rotation lock. The spacenavd/libspnav socket for unchanged clients (Blender,
-FreeCAD) comes later and carries less.
+press, the rotation lock, and (version 2) the LCD with labels and icons from the application
+that has the focus. The spacenavd/libspnav socket for unchanged clients (Blender, FreeCAD)
+comes later and carries less.
+
+Version 2 only adds to version 1: a client that says `"api":1` sees exactly what version 1
+describes. Everything marked *API 2* below is sent to, and accepted from, connections that
+agreed on version 2 only.
 
 Rust clients use `crates/smed-client`. The protocol is small enough to speak without it.
 
@@ -21,13 +26,21 @@ Rust clients use `crates/smed-client`. The protocol is small enough to speak wit
 The client speaks first:
 
 ```json
-{"type":"hello","api":1,"client":"solidcraft"}
+{"type":"hello","api":2,"client":"solidcraft"}
 ```
 
-smed answers with its own `hello`, then a `state` message:
+smed answers with its own `hello`, then a `state` message, and with API 2 an `lcd` message:
 
 ```json
-{"type":"hello","api":1,"server":"smed 0.1.0"}
+{"type":"hello","api":2,"server":"smed 0.2.0"}
+{"type":"state","device":{"vid":9583,"pid":50739,"name":"3Dconnexion SpaceMouse Enterprise","firmware":"4.42"},"lock":false,"lcd":true}
+{"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"light"}
+```
+
+With `"api":1` the same handshake is `hello` and `state` without the `lcd` field:
+
+```json
+{"type":"hello","api":1,"server":"smed 0.2.0"}
 {"type":"state","device":{"vid":9583,"pid":50739,"name":"3Dconnexion SpaceMouse Enterprise","firmware":"4.42"},"lock":false}
 ```
 
@@ -35,17 +48,21 @@ smed answers with its own `hello`, then a `state` message:
   `min(client api, server api)` and uses that. A version smed does not support at all gets an
   `error` message, and smed closes the connection.
 - Before the handshake smed sends nothing. A message other than `hello` gets an `error`.
+- A line longer than 262144 bytes (256 KiB, icons included) gets an `error` and is dropped;
+  the connection stays.
 
 ## Server → client
 
 | type | fields | meaning |
 | --- | --- | --- |
 | `hello` | `api`, `server` | answer to the client's `hello` |
-| `state` | `device` (object or `null`), `lock` (bool) | the full state: after the handshake and on `get_state` |
+| `state` | `device` (object or `null`), `lock` (bool), *API 2:* `lcd` (bool) | the full state: after the handshake and on `get_state`. `lcd`: smed can draw on the LCD (the device is there and its LCD interface could be claimed) |
 | `device` | `device` (object or `null`) | the device appeared (object) or went away (`null`) |
 | `motion` | `t` [x, y, z], `r` [rx, ry, rz] | one motion report, int16 each, ~60 Hz while the cap moves |
 | `key` | `key`, `id`, `press`, `down` | a key went down or up |
 | `lock` | `on` (bool) | the rotation lock changed (Lock key or a client's `set_lock`) |
+| `lcd` | `owner` (bool), `brightness` (0–100), `text_size` (`"small"`/`"large"`), `theme` (`"light"`/`"dark"`) | *API 2.* `owner`: this connection has the LCD. Sent after the handshake, when the owner or a setting changes, and in answer to every `set_lcd` |
+| `screen` | `png` (base64) | *API 2.* The answer to `get_screen`: the page smed shows now, drawn as it goes to the LCD (also without a device), as a 640×150 PNG |
 | `error` | `message` | the last request failed |
 
 `device` object: `vid`, `pid` (numbers), `name` (string, the kernel's HID name), `firmware`
@@ -109,12 +126,53 @@ and a re-plug of the device, but not a restart of smed.
 | `hello` | `api`, `client` | handshake (above) |
 | `set_lock` | `on` (bool) | set the rotation lock; every client gets `lock` if it changed |
 | `get_state` | — | smed answers with `state` |
+| `set_icon` | `id`, and `svg` (SVG source) or `png` (base64 PNG) | *API 2.* Keep an icon under `id` for this connection; replaces one with the same `id` |
+| `set_commands` | `app` {`name`, `icon`?}, `commands` [{`id`, `label`, `icon`?}] | *API 2.* The application and its command catalogue; replaces the previous ones |
+| `set_environments` | `environments` [{`id`, `name`, `keys` {key name: command `id`}}] | *API 2.* The environments and which command each key runs in them; replaces the previous ones |
+| `focus` | `on` (bool) | *API 2.* This client's window got or lost the input focus |
+| `set_lcd` | `brightness`?, `text_size`?, `theme`? | *API 2.* Change the LCD settings, for every client, until smed restarts; smed answers with `lcd` |
+| `get_screen` | — | *API 2.* smed answers with `screen` |
+
+## The LCD (API 2)
+
+The LCD (640×150) shows one page: a header with the application's icon, name and environment,
+then 12 tiles over the keys 1–6 (top row) and 7–12 (bottom row), each with an icon above its
+label. **smed draws it** from what clients send; a client sends no pictures of pages.
+
+- **Who has it.** The client that last sent `"focus":true` owns the LCD; smed tells every
+  API 2 client with `lcd` (`owner`). A `focus` `false` from the owner, or its disconnect,
+  leaves the LCD without an owner: smed then shows its own page. A client should send
+  `focus` whenever its window gains or loses the input focus (smed does not watch windows
+  yet). `key`, `motion` and `lock` still go to every client.
+- **What it shows.** The owner's `app` (`name`, else the name from its `hello`), its first
+  environment's `name`, and for each key `"1"`–`"12"` in that environment's `keys` the
+  command's `label` and `icon`. A key with no command, or with a command `id` or icon `id`
+  smed does not know, shows an empty tile (icon left out). Only the keys 1–12 have tiles;
+  other key names in `keys` are kept for later versions.
+- **Icons.** SVG is drawn without text elements and without raster images inside it.
+  `currentColor` is drawn in the theme's text colour, unless the SVG's root sets `color`;
+  icons with fixed colours keep them. A PNG is scaled to fit; it may be at most 512×512 pixels. Icons are square-fitted and
+  belong to the connection: send them before the commands that use them, and again after a
+  reconnect. An icon that does not parse gets an `error`.
+- **Replace, not patch.** Each `set_commands`, `set_environments` replaces that part
+  completely; when the client disconnects, smed forgets everything it sent.
+- **Settings.** `brightness`, `text_size` and `theme` are smed's, shared by all clients:
+  from smed's config file at start (`$XDG_CONFIG_HOME/smed/config.toml`, section `[lcd]`),
+  changed by `set_lcd` until smed restarts. smed never writes the file.
+- Changes within about 50 ms make one frame; smed sends a frame only when the page changed.
+
+```json
+{"type":"set_icon","id":"line","svg":"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 20 20 4' stroke='currentColor' stroke-width='2'/></svg>"}
+{"type":"set_commands","app":{"name":"SolidCraft","icon":"logo"},"commands":[{"id":"sketch.line","label":"Line","icon":"line"},{"id":"edit.undo","label":"Undo"}]}
+{"type":"set_environments","environments":[{"id":"sketch","name":"Sketch","keys":{"1":"sketch.line","9":"edit.undo"}}]}
+{"type":"focus","on":true}
+```
 
 ## Example session
 
 ```text
 > {"type":"hello","api":1,"client":"smectl"}
-< {"type":"hello","api":1,"server":"smed 0.1.0"}
+< {"type":"hello","api":1,"server":"smed 0.2.0"}
 < {"type":"state","device":{"vid":9583,"pid":50739,"name":"3Dconnexion SpaceMouse Enterprise","firmware":"4.42"},"lock":false}
 < {"type":"motion","t":[0,-12,3],"r":[5,0,0]}
 < {"type":"key","key":"lock","id":27,"press":"short","down":true}
@@ -123,3 +181,20 @@ and a re-plug of the device, but not a restart of smed.
 > {"type":"set_lock","on":false}
 < {"type":"lock","on":false}
 ```
+
+With API 2:
+
+```text
+> {"type":"hello","api":2,"client":"smectl"}
+< {"type":"hello","api":2,"server":"smed 0.2.0"}
+< {"type":"state","device":null,"lock":false,"lcd":false}
+< {"type":"lcd","owner":false,"brightness":100,"text_size":"small","theme":"light"}
+> {"type":"focus","on":true}
+< {"type":"lcd","owner":true,"brightness":100,"text_size":"small","theme":"light"}
+> {"type":"set_lcd","brightness":40}
+< {"type":"lcd","owner":true,"brightness":40,"text_size":"small","theme":"light"}
+> {"type":"get_screen"}
+< {"type":"screen","png":"iVBORw0KGgo="}
+```
+
+(The `png` is shortened here; it is a whole 640×150 PNG.)
