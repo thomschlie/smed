@@ -435,6 +435,10 @@ pub struct Lines {
     pending: Vec<u8>,
     /// How many bytes at the start of `pending` are known to hold no newline.
     scanned: usize,
+    /// How many bytes the newline search has looked at in all, for the test that each byte is
+    /// looked at once.
+    #[cfg(test)]
+    looked: usize,
 }
 
 /// What [`Lines::next_message`] found wrong.
@@ -443,6 +447,7 @@ pub struct Lines {
 pub enum LineError {
     /// A line that is not a message (not valid JSON, or a known type with wrong fields). The
     /// line is dropped; the following ones still read.
+    #[non_exhaustive]
     Invalid { reason: String },
     /// A line longer than [`MAX_SERVER_LINE`]: everything pushed so far is dropped. That is no
     /// smed; close the connection.
@@ -483,9 +488,12 @@ impl Lines {
     /// not looked at yet, so a long line read in many parts costs no more than read in one.
     pub fn next_message(&mut self) -> Result<Option<ServerMessage>, LineError> {
         loop {
-            let found = self.pending[self.scanned..]
-                .iter()
-                .position(|&byte| byte == b'\n');
+            let unseen = &self.pending[self.scanned..];
+            #[cfg(test)]
+            {
+                self.looked += unseen.len();
+            }
+            let found = unseen.iter().position(|&byte| byte == b'\n');
             let Some(end) = found.map(|at| self.scanned + at) else {
                 self.scanned = self.pending.len();
                 if self.pending.len() > MAX_SERVER_LINE {
@@ -650,7 +658,9 @@ impl Client {
     }
 
     /// The next message, blocking; `None` once smed closed the connection. Unknown message
-    /// types are skipped; a line that is not valid JSON is an error (see [`Lines`]). With a read
+    /// types are skipped. A [`LineError`] comes as `InvalidData` with the `LineError` inside
+    /// (`get_ref()` and `downcast_ref`): after `Invalid` the next call reads on, after `Overlong`
+    /// close the connection. With a read
     /// timeout on [`Client::stream`], a timeout is returned as the error it is (`WouldBlock` or
     /// `TimedOut`) and a line it split is kept: the next call goes on with it.
     pub fn next_message(&mut self) -> io::Result<Option<ServerMessage>> {
@@ -1089,6 +1099,7 @@ mod tests {
         longest.resize(MAX_SERVER_LINE - 2, b'A');
         longest.extend_from_slice(b"\"}\n");
         let mut lines = Lines::new();
+        let mut handed_out = 0;
         for part in longest.chunks(4096) {
             lines.push(part);
             if lines.scanned < lines.pending.len() {
@@ -1100,9 +1111,14 @@ mod tests {
                 } else {
                     assert!(matches!(message, Some(ServerMessage::Screen { .. })));
                     assert!(lines.is_empty());
+                    handed_out += 1;
                 }
             }
         }
+        assert_eq!(handed_out, 1);
+        // Each byte once: a search from the start of the buffer at every call would look at
+        // about 128 times as many.
+        assert_eq!(lines.looked, longest.len());
         // After a line, the bytes behind it are looked at afresh.
         lines.push(b"{\"type\":\"lock\",\"on\":true}\n{\"type\":\"lock\",\"on\":false}\n");
         assert_eq!(
