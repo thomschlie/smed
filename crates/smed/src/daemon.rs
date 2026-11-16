@@ -678,7 +678,10 @@ mod tests {
                 r#"{"type":"set_lcd","brightness":10}"#,
                 r#"{"type":"focus","on":true}"#,
                 r#"{"type":"set_lcd","theme":"blue"}"#,
-                &format!(r#"{{"type":"set_icon","id":"big","png":"{}"}}"#, "A".repeat(MAX_MESSAGE)),
+                &format!(
+                    r#"{{"type":"set_icon","id":"big","png":"{}"}}"#,
+                    "A".repeat(MAX_MESSAGE)
+                ),
             ],
         );
         assert!(seen.is_empty(), "ignored: {seen:?}");
