@@ -173,8 +173,11 @@ fn metrics(size: TextSize) -> Metrics {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the embedded fonts are known good (a test loads them); a failure is a build mistake"
+)]
 fn fonts() -> (FontRef<'static>, FontRef<'static>) {
-    // The embedded fonts are known good; a failure here is a build mistake.
     (
         FontRef::try_from_slice(REGULAR).expect("embedded Noto Sans Regular"),
         FontRef::try_from_slice(SEMIBOLD).expect("embedded Noto Sans SemiBold"),
@@ -202,6 +205,7 @@ pub fn render(page: &Page, settings: &LcdSettings) -> Pixmap {
     let colors = palette(settings.theme);
     let sizes = metrics(settings.text_size);
     let (regular, semibold) = fonts();
+    #[expect(clippy::expect_used, reason = "a fixed, non-zero size never fails")]
     let mut canvas = Pixmap::new(WIDTH as u32, HEIGHT as u32).expect("640×150 is a valid size");
     canvas.fill(color(colors.background));
 

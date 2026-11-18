@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/smed", "crates/smed-client", "crates/smectl"]
+members = ["crates/smed", "crates/smed-client", "crates/smectl", "xtask"]
 
 [workspace.package]
 version = "0.2.0"
@@ -21,3 +21,14 @@ miniz_oxide = "0.9"
 # No text, system fonts or raster images inside SVGs: icons are shapes; smed draws text itself.
 resvg = { version = "0.50", default-features = false }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
+
+# smed runs as a service and smed-client inside other applications: a panic means a dead mouse
+# or a crashed application. Tests may panic (clippy.toml); any other site needs an #[expect]
+# with its reason. Every crate but xtask takes these with `[lints] workspace = true`.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"

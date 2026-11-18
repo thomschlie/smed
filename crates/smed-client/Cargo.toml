@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["spacemouse", "3dconnexion", "6dof", "linux", "input"]
 categories = ["hardware-support", "api-bindings"]
 
+[lints]
+workspace = true
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

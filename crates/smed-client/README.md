@@ -11,14 +11,17 @@ types both sides use, the table of key names and a small blocking client. The pr
 specified in
 [docs/api.md](https://github.com/thomschlie/smed/blob/master/docs/api.md).
 
-```rust
+```rust,no_run
 use smed_client::{Client, ServerMessage};
 
-let mut client = Client::connect("example")?;
-while let Some(message) = client.next_message()? {
-    if let ServerMessage::Key { key, press, down, .. } = message {
-        println!("{key} {press:?} {}", if down { "down" } else { "up" });
+fn main() -> std::io::Result<()> {
+    let mut client = Client::connect("example")?;
+    while let Some(message) = client.next_message()? {
+        if let ServerMessage::Key { key, press, down, .. } = message {
+            println!("{key} {press:?} {}", if down { "down" } else { "up" });
+        }
     }
+    Ok(())
 }
 ```
 
@@ -26,18 +29,21 @@ With API 2, an application puts its commands on keys 1–12 and the device's LCD
 command catalogue (labels, SVG or PNG icons) and environments, says when its window has the
 focus, and smed reports a `command` when a key with a command goes down:
 
-```rust
+```rust,no_run
 use smed_client::{App, Client, Command, Environment, ServerMessage};
 
-let mut client = Client::connect("example")?;
-client.set_commands(&App::new("Example"), &[Command::new("edit.undo", "Undo")])?;
-client.set_environments(&[Environment::new("main", "Main").with_key("1", "edit.undo")])?;
-client.set_environment("main")?;
-client.focus(true)?;
-while let Some(message) = client.next_message()? {
-    if let ServerMessage::Command { id, .. } = message {
-        println!("run {id}");
+fn main() -> std::io::Result<()> {
+    let mut client = Client::connect("example")?;
+    client.set_commands(&App::new("Example"), &[Command::new("edit.undo", "Undo")])?;
+    client.set_environments(&[Environment::new("main", "Main").with_key("1", "edit.undo")])?;
+    client.set_environment("main")?;
+    client.focus(true)?;
+    while let Some(message) = client.next_message()? {
+        if let ServerMessage::Command { id, .. } = message {
+            println!("run {id}");
+        }
     }
+    Ok(())
 }
 ```
 
