@@ -686,6 +686,25 @@ mod tests {
     }
 
     #[test]
+    fn api_version_0_gets_an_error_and_the_connection_closes() {
+        let shared = Shared::new();
+        let (mut client, mut reader) = connect(&shared);
+        client
+            .write_all(b"{\"type\":\"hello\",\"api\":0,\"client\":\"t\"}\n")
+            .unwrap();
+        assert_eq!(
+            read(&mut reader),
+            ServerMessage::Error {
+                message: "unsupported API version 0".into()
+            }
+        );
+        let mut rest = String::new();
+        reader.read_line(&mut rest).unwrap();
+        assert_eq!(rest, "", "nothing after the error");
+        assert!(shared.state().clients.is_empty());
+    }
+
+    #[test]
     fn an_api_1_client_sees_nothing_of_the_lcd() {
         let shared = Shared::new();
         let (mut client, mut reader) = connect(&shared);
@@ -709,6 +728,7 @@ mod tests {
                 r#"{"type":"focus","on":true}"#,
                 r#"{"type":"set_lcd","theme":"blue"}"#,
                 r#"{"type":"set_environment"}"#,
+                r#"{"type":"get_screen"}"#,
                 &format!(
                     r#"{{"type":"set_icon","id":"big","png":"{}"}}"#,
                     "A".repeat(MAX_MESSAGE)

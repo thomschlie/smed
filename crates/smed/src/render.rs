@@ -636,6 +636,63 @@ mod tests {
         assert!(error.contains("larger than 512×512"), "{error}");
     }
 
+    /// The first 33 bytes of a PNG: signature and IHDR chunk claiming `width`×`height`.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&width.to_be_bytes());
+        png.extend_from_slice(&height.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        png
+    }
+
+    fn png_error(png: &[u8]) -> String {
+        let data = base64::engine::general_purpose::STANDARD.encode(png);
+        match Icon::from_png_base64(&data) {
+            Ok(_) => panic!("accepted"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn a_png_icon_is_refused_when_either_side_is_too_large() {
+        for (width, height) in [(513, 1), (1, 513), (65_536, 1), (1, 65_536)] {
+            let error = png_error(&png_header(width, height));
+            assert!(
+                error.contains(&format!("PNG {width}×{height} is larger than 512×512")),
+                "{width}×{height}: {error}"
+            );
+        }
+        // The header alone is enough to refuse it: 24 bytes end with the height.
+        let error = png_error(&png_header(513, 1)[..24]);
+        assert!(error.contains("larger than"), "{error}");
+    }
+
+    #[test]
+    fn a_png_icon_of_the_largest_size_is_accepted() {
+        let png = Pixmap::new(MAX_ICON_SIDE, MAX_ICON_SIDE)
+            .unwrap()
+            .encode_png()
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png);
+        let Icon::Png(pixmap) = Icon::from_png_base64(&data).unwrap() else {
+            panic!("not a PNG icon");
+        };
+        assert_eq!((pixmap.width(), pixmap.height()), (512, 512));
+    }
+
+    #[test]
+    fn a_png_without_its_header_is_refused() {
+        let mut wrong_signature = png_header(16, 16);
+        wrong_signature[1] = b'X';
+        let mut no_ihdr = png_header(16, 16);
+        no_ihdr[12..16].copy_from_slice(b"IDAT");
+        let short = &png_header(16, 16)[..23];
+        for png in [&wrong_signature[..], &no_ihdr[..], short] {
+            let error = png_error(png);
+            assert_eq!(error, "invalid PNG: no header", "{png:?}");
+        }
+    }
+
     #[test]
     fn current_color_follows_the_theme_unless_the_icon_sets_it() {
         assert!(with_current_color(SQUARE, [1, 2, 3]).starts_with(r##"<svg color="#010203" "##));
