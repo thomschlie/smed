@@ -88,3 +88,15 @@ pub fn send(client: &mut Client) -> io::Result<()> {
     client.set_environments(&[demo, shapes])?;
     client.focus(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_11_switches_between_the_two_environments() {
+        assert_eq!(other_environment("demo"), "shapes");
+        assert_eq!(other_environment("shapes"), "demo");
+        assert_eq!(other_environment("unknown"), "demo");
+    }
+}
