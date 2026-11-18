@@ -1,0 +1,20 @@
+# cargo-mutants (https://mutants.rs): finds behaviour the tests would not notice changing. A tool
+# for test gaps, not a gate. Run from the workspace root: `cargo mutants`, or only on the lines a
+# branch changes: `git diff origin/master -- '*.rs' > /tmp/change.diff && cargo mutants --in-diff
+# /tmp/change.diff`.
+
+# Left out: code no unit test can reach.
+exclude_globs = [
+    # The build tool; its checks are proven by breaking what they guard.
+    "xtask/**",
+    # USB bulk transfers to the real LCD (ioctls on the device node).
+    "crates/smed/src/usb.rs",
+    # The daemon's process wiring: arguments, socket, threads. The packaging gate installs and
+    # runs the binary.
+    "crates/smed/src/main.rs",
+]
+exclude_re = [
+    # The real hidraw device; the tests drive the daemon through a fake HidDevice and `find_in`
+    # on a fake sysfs.
+    'device\.rs:.*(Hidraw| find ->| in find$)',
+]

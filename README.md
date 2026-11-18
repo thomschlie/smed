@@ -109,6 +109,13 @@ pinned toolchain (`rust-toolchain.toml`), and the cargo tools at the versions it
 is missing. A change that draws the LCD differently on purpose updates the goldens with
 `SMED_BLESS=1 cargo test -p smed --test golden`.
 
+[cargo-mutants](https://mutants.rs) shows behaviour the tests would not notice changing. It is
+no gate: run it on the lines a branch changes,
+`git diff origin/master -- '*.rs' > /tmp/change.diff && cargo mutants --in-diff /tmp/change.diff`,
+and add a test for each missed mutant that matters. `.cargo/mutants.toml` leaves out the code no
+unit test can reach (the real USB and hidraw devices, the daemon's process wiring), each with
+its reason.
+
 ## Licence
 
 `MIT OR Apache-2.0` ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)). No
