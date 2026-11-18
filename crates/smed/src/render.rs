@@ -750,6 +750,103 @@ mod tests {
         assert_eq!(pixel(&light, 630.0, 2.0), palette(Theme::Light).header);
     }
 
+    /// A canvas of `w`×`h` in white.
+    fn blank(w: u32, h: u32) -> Pixmap {
+        let mut canvas = Pixmap::new(w, h).unwrap();
+        canvas.fill(color([0xff; 3]));
+        canvas
+    }
+
+    fn inked(canvas: &Pixmap, x: u32, y: u32) -> bool {
+        pixel(canvas, x as f32, y as f32) != [0xff; 3]
+    }
+
+    #[test]
+    fn an_icon_keeps_its_aspect_ratio_and_is_centred_in_its_square() {
+        const WIDE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 4"><rect width="8" height="4" fill="currentColor"/></svg>"#;
+        const TALL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 8"><rect width="4" height="8" fill="currentColor"/></svg>"#;
+        let black = [0, 0, 0];
+        // The square is at (10, 10), 40 wide: a 2:1 icon fills 40×20 in its middle rows, a 1:2
+        // icon 20×40 in its middle columns.
+        let mut wide = blank(60, 60);
+        draw_icon(
+            &mut wide,
+            &Icon::from_svg(WIDE).unwrap(),
+            (10.0, 10.0, 40.0),
+            black,
+        );
+        for (x, y, ink) in [
+            (11, 30, true),
+            (48, 30, true),
+            (30, 21, true),
+            (30, 38, true),
+            (30, 18, false),
+            (30, 42, false),
+        ] {
+            assert_eq!(inked(&wide, x, y), ink, "wide icon at ({x}, {y})");
+        }
+        let mut tall = blank(60, 60);
+        draw_icon(
+            &mut tall,
+            &Icon::from_svg(TALL).unwrap(),
+            (10.0, 10.0, 40.0),
+            black,
+        );
+        for (x, y, ink) in [
+            (30, 11, true),
+            (30, 48, true),
+            (21, 30, true),
+            (38, 30, true),
+            (18, 30, false),
+            (42, 30, false),
+        ] {
+            assert_eq!(inked(&tall, x, y), ink, "tall icon at ({x}, {y})");
+        }
+    }
+
+    /// The rightmost column of the header with something drawn in it.
+    fn header_ink_ends(canvas: &Pixmap, header: [u8; 3]) -> u32 {
+        (0..canvas.width())
+            .filter(|&x| (0..HEADER as u32).any(|y| pixel(canvas, x as f32, y as f32) != header))
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_long_title_or_environment_is_cut_8_pixels_before_the_edge() {
+        let settings = LcdSettings::default();
+        let header = palette(settings.theme).header;
+        // About 800 pixels wide at the title size.
+        let long = "Gearbox housing ".repeat(8);
+
+        let mut page = Page::placeholder();
+        page.title = long.clone();
+        let ends = header_ink_ends(&render(&page, &settings), header);
+        assert!((600..632).contains(&ends), "title ends at {ends}");
+
+        page.title = "Part".into();
+        page.environment = Some(long);
+        let ends = header_ink_ends(&render(&page, &settings), header);
+        assert!((600..632).contains(&ends), "environment ends at {ends}");
+    }
+
+    #[test]
+    fn text_over_the_edges_is_clipped_to_the_canvas() {
+        let font = regular();
+        let black = [0, 0, 0];
+        // One glyph over the left and top edges, one over the right and bottom edges.
+        let mut canvas = blank(40, 20);
+        draw_text(&mut canvas, &font, 20.0, (-4.0, 8.0), "W", black);
+        draw_text(&mut canvas, &font, 20.0, (32.0, 26.0), "W", black);
+        let column = |x| (0..20).any(|y| inked(&canvas, x, y));
+        let row = |y| (0..40).any(|x| inked(&canvas, x, y));
+        assert!(column(0) && row(0), "drawn up to the left and top edges");
+        assert!(
+            column(39) && row(19),
+            "drawn up to the right and bottom edges"
+        );
+    }
+
     /// `SMED_RENDER_OUT=dir cargo test -p smed render` writes the sample pages as PNG.
     #[test]
     fn sample_pages_can_be_written_for_a_look() {
