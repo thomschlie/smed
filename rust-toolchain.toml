@@ -1,0 +1,7 @@
+# One Rust for building and linting, locally and in CI: a newer clippy must not turn the gate red
+# unannounced. Cargo.toml's rust-version is the oldest release smed builds on; `cargo xtask check`
+# checks that one too. Keep TOOLCHAIN in xtask/src/main.rs in step.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
