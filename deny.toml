@@ -1,0 +1,40 @@
+# cargo-deny's checks of smed's dependencies, run by `cargo xtask check`.
+
+[graph]
+all-features = true
+
+[licenses]
+# smed is MIT OR Apache-2.0, so its dependencies have to be permissive. No copyleft, not even
+# file-level (MPL-2.0): a crate under such a licence needs an exception below with its reason.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Zlib",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[licenses.private]
+# xtask is not published.
+ignore = true
+
+[advisories]
+# A known vulnerability fails the gate; an unmaintained or yanked crate is a warning to act on
+# (`cargo xtask check` runs cargo-deny with --warn unmaintained).
+unmaintained = "all"
+yanked = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace carry a version too, so they are no wildcards.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

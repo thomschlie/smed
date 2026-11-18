@@ -15,7 +15,7 @@ const TOOLCHAIN: &str = "1.99.1";
 /// Cargo.toml's `rust-version`: the oldest Rust smed promises to build on.
 const MSRV: &str = "1.88";
 
-const USAGE: &str = "usage: cargo xtask check\n\n  check   run every gate (formatting, lints, tests, MSRV, packaging, semver)\n";
+const USAGE: &str = "usage: cargo xtask check\n\n  check   run every gate (formatting, lints, tests, MSRV, dependencies, packaging, semver)\n";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -84,6 +84,10 @@ fn check() -> Result {
             "--locked",
         ]);
     step(&format!("MSRV {MSRV}"), msrv)?;
+    step(
+        "cargo-deny (licences, advisories, bans, sources)",
+        cargo(["deny", "--locked", "check", "--warn", "unmaintained"]),
+    )?;
     packaging()?;
     step(
         "semver-checks (smed-client against its latest release)",
@@ -242,7 +246,7 @@ fn workspace_version() -> Result<String> {
 
 /// The cargo tools the gates run, with the versions they are tested with. A different version
 /// is refused, not used: a build machine that installs them takes these pins.
-const TOOLS: [(&str, &str); 1] = [("semver-checks", "0.51.0")];
+const TOOLS: [(&str, &str); 2] = [("deny", "0.20.2"), ("semver-checks", "0.51.0")];
 
 fn tools_installed() -> Result {
     for (tool, version) in TOOLS {
