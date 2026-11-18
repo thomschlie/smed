@@ -495,6 +495,9 @@ mod tests {
     use crate::render::Page;
     use crate::usb::FakeLcd;
     use smed_client::{Press, TextSize, Theme};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
 
     fn read(reader: &mut BufReader<UnixStream>) -> ServerMessage {
         let mut line = String::new();
@@ -867,10 +870,20 @@ mod tests {
         }
     }
 
-    struct BrokenLcd;
+    /// An LCD interface whose every transfer fails; counts them. A failed frame stops at its
+    /// header, so the count is the number of frames tried.
+    #[derive(Default)]
+    struct BrokenLcd(AtomicUsize);
+
+    impl BrokenLcd {
+        fn tries(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
 
     impl LcdSink for BrokenLcd {
         fn bulk_out(&self, _: &[u8]) -> io::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             Err(io::Error::from(io::ErrorKind::TimedOut))
         }
     }
@@ -878,10 +891,110 @@ mod tests {
     #[test]
     fn a_failed_frame_is_reported_for_a_retry() {
         let shared = Shared::new();
-        shared.state().lcd_sink = Some(Arc::new(BrokenLcd));
+        shared.state().lcd_sink = Some(Arc::new(BrokenLcd::default()));
         assert!(!shared.draw());
         shared.state().lcd_sink = Some(Arc::new(FakeLcd::default()));
         assert!(shared.draw());
+    }
+
+    #[test]
+    fn the_lcd_thread_draws_a_change_and_retries_a_failed_frame_three_times() {
+        let shared = Shared::new();
+        let sink = Arc::new(BrokenLcd::default());
+        shared.state().lcd_sink = Some(sink.clone());
+        let lcd = shared.clone();
+        // Never returns; it waits for the next change once it has given up.
+        std::thread::spawn(move || lcd.run_lcd());
+        {
+            let mut state = shared.state();
+            shared.redraw(&mut state);
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while sink.tries() < 1 + LCD_RETRIES as usize && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            sink.tries(),
+            1 + LCD_RETRIES as usize,
+            "the frame and 3 retries"
+        );
+        std::thread::sleep(LCD_RETRY_DELAY + Duration::from_millis(500));
+        assert_eq!(sink.tries(), 1 + LCD_RETRIES as usize, "then it gives up");
+    }
+
+    #[test]
+    fn with_settings_starts_with_those_settings() {
+        let settings = LcdSettings {
+            brightness: 40,
+            text_size: TextSize::Large,
+            theme: Theme::Dark,
+        };
+        let shared = Shared::with_settings(settings);
+        assert_eq!(shared.state().lcd.settings(), settings);
+    }
+
+    /// A device that reads as scripted: a report or an error, end of file once the script is
+    /// done.
+    struct ScriptedDevice(Mutex<VecDeque<io::Result<Vec<u8>>>>);
+
+    impl ScriptedDevice {
+        fn new(script: impl IntoIterator<Item = io::Result<Vec<u8>>>) -> Arc<Self> {
+            Arc::new(Self(Mutex::new(script.into_iter().collect())))
+        }
+
+        fn left(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+    }
+
+    impl HidDevice for ScriptedDevice {
+        fn read_report(&self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.0.lock().unwrap().pop_front() {
+                Some(Ok(report)) => {
+                    buf[..report.len()].copy_from_slice(&report);
+                    Ok(report.len())
+                }
+                Some(Err(error)) => Err(error),
+                None => Ok(0),
+            }
+        }
+
+        fn write_output(&self, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn set_feature(&self, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_read_again() {
+        let shared = Shared::new();
+        let device = ScriptedDevice::new([
+            Err(io::Error::from(io::ErrorKind::Interrupted)),
+            Ok(keys_report(0x1c, &[27])),
+        ]);
+        shared.run_device(device.clone(), info(), None).unwrap();
+        assert_eq!(
+            device.left(),
+            0,
+            "the report after the interruption was read"
+        );
+    }
+
+    #[test]
+    fn a_read_error_ends_the_device() {
+        let shared = Shared::new();
+        let device = ScriptedDevice::new([
+            Err(io::Error::other("unplugged")),
+            Ok(keys_report(0x1c, &[27])),
+        ]);
+        let error = shared.run_device(device.clone(), info(), None).unwrap_err();
+        assert_eq!(error.to_string(), "unplugged");
+        assert_eq!(device.left(), 1, "nothing read after the error");
+        assert_eq!(shared.state().device, None);
     }
 
     #[test]
@@ -935,6 +1048,26 @@ mod tests {
             .filter_map(|(px, py)| canvas.pixel(px, py))
             .any(|p| p.red() > 0xe0 && (0x70..0xa0).contains(&p.green()) && p.blue() < 0x40);
         assert!(orange, "the PNG is drawn");
+    }
+
+    #[test]
+    fn a_message_of_exactly_256_kib_is_taken() {
+        let shared = Shared::new();
+        let (mut client, mut reader) = hello(&shared, 2, "big");
+        let frame =
+            r#"{"type":"set_commands","app":{"name":"Big"},"commands":[{"id":"c","label":""}]}"#;
+        let label = "x".repeat(MAX_MESSAGE - frame.len());
+        let line = frame.replace(r#""label":"""#, &format!(r#""label":"{label}""#));
+        assert_eq!(line.len(), MAX_MESSAGE);
+        let seen = exchange(&mut client, &mut reader, &[&line]);
+        assert_eq!(seen, vec![], "no error");
+        let id = shared.state().clients[0].id;
+        shared.state().lcd.focus(id, true);
+        assert_eq!(
+            shared.state().lcd.page().title,
+            "Big",
+            "the catalogue was taken"
+        );
     }
 
     #[test]
