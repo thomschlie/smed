@@ -7,6 +7,9 @@
 //! `SMED_BLESS=1 cargo test -p smed --test golden`; the pull request says why they changed.
 //! A failing comparison leaves what was drawn in `target/tmp/golden-diff/`.
 
+// A test file: clippy's allow-*-in-tests covers only #[test] functions, not the helpers here.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

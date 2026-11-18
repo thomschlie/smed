@@ -99,6 +99,16 @@ smed and spacenavd should not both run: stop spacenavd while smed is in use
    the focused window.
 2. An on-screen display, radial menus, macros, a settings tool with your own key assignments.
 
+## Development
+
+`cargo xtask check` runs every gate a change has to pass: formatting, clippy (no `unwrap`,
+`expect` or `panic` outside tests), the tests with the LCD goldens, a build with the oldest
+supported Rust, cargo-deny (licences, advisories, sources), the packaged crates built and tested
+on their own, and cargo-semver-checks for `smed-client`. It needs rustup, Rust 1.88 besides the
+pinned toolchain (`rust-toolchain.toml`), and the cargo tools at the versions it names when one
+is missing. A change that draws the LCD differently on purpose updates the goldens with
+`SMED_BLESS=1 cargo test -p smed --test golden`.
+
 ## Licence
 
 `MIT OR Apache-2.0` ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)). No
