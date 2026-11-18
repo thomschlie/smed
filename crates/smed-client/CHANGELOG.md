@@ -16,6 +16,7 @@ of API 1 are unchanged, and a client that says `"api":1` sees exactly what it sa
   `focus`, `set_lcd` and `get_screen`.
 - New server messages: `Lcd` (the LCD settings), `Command` (a key with a command went down) and
   `Screen` (`screen_png()` decodes it).
+- `ServerMessage::State` has an optional `lcd` field (API 2: whether smed can draw on the LCD).
 - `App`, `Command` and `Environment` with `new()` and `with_*` builders; `DeviceInfo::new`;
   `TextSize` and `Theme`.
 - `Lines`, a decoder without I/O for applications that read the socket in their own loop, and
