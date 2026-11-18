@@ -188,6 +188,14 @@ a command send `key` only. Switch environments with
 {"type":"set_environment","id":"part"}
 ```
 
+`smectl demo-page` shows this with two environments of one catalogue. Key 11's command makes
+smectl switch to the other one, and the same keys show other commands; keys the environment
+leaves free are empty tiles with their number:
+
+![Environment Demo: commands on all keys but 12](lcd-demo.png)
+
+![Environment Shapes, after key 11: some of the same commands on other keys, the rest empty](lcd-shapes.png)
+
 A client that keeps a key assignment of its own (one its users edit) can use the LCD for
 display only: it sends its assignment as an environment, so the keys show its labels, runs its
 jobs from `key` as before, and ignores `command`.
