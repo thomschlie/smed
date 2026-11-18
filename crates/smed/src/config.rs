@@ -122,4 +122,30 @@ mod tests {
         let path = std::env::temp_dir().join("smed-no-such-dir/config.toml");
         assert_eq!(Config::load(&path).unwrap(), Config::default());
     }
+
+    #[test]
+    fn a_file_is_read_and_a_bad_or_unreadable_one_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("smed-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        std::fs::write(&path, "[lcd]\nbrightness = 40\n").unwrap();
+        assert_eq!(Config::load(&path).unwrap().lcd.brightness, 40);
+
+        std::fs::write(&path, "[lcd]\nbrigthness = 40\n").unwrap();
+        let error = Config::load(&path).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{}: ", path.display())),
+            "{error}"
+        );
+
+        // A directory where the file should be: an error, not the defaults.
+        let error = Config::load(&dir).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{}: ", dir.display())),
+            "{error}"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

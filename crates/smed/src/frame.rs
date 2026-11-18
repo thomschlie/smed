@@ -315,4 +315,16 @@ mod tests {
             vec![1, 2, 3]
         );
     }
+
+    #[test]
+    fn a_stream_ending_on_a_byte_boundary_gets_no_extra_byte() {
+        // The block header (3 bits), six 9-bit literals and the 7-bit end of block: 64 bits.
+        let data = [150, 151, 152, 153, 154, 155];
+        let packed = deflate_fixed(&data);
+        assert_eq!(packed.len(), 8);
+        assert_eq!(
+            miniz_oxide::inflate::decompress_to_vec(&packed).unwrap(),
+            data
+        );
+    }
 }
