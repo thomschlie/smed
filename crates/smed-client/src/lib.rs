@@ -975,6 +975,33 @@ mod tests {
         assert_eq!(sent(&mut smed), r#"{"type":"set_lcd","brightness":40}"#);
         client.get_screen().unwrap();
         assert_eq!(sent(&mut smed), r#"{"type":"get_screen"}"#);
+        client.set_lock(true).unwrap();
+        assert_eq!(sent(&mut smed), r#"{"type":"set_lock","on":true}"#);
+        client.get_state().unwrap();
+        assert_eq!(sent(&mut smed), r#"{"type":"get_state"}"#);
+    }
+
+    #[test]
+    fn the_limits_keep_their_values() {
+        // docs/api.md: smed refuses a line longer than 262144 bytes.
+        assert_eq!(MAX_MESSAGE, 262_144);
+        // Public: an application may size its buffers by it. semver-checks sees no value change.
+        assert_eq!(MAX_SERVER_LINE, 1_048_576);
+    }
+
+    #[test]
+    fn line_errors_say_what_went_wrong() {
+        let invalid = LineError::Invalid {
+            reason: "expected value".into(),
+        };
+        assert_eq!(
+            invalid.to_string(),
+            "a line that is not a message: expected value"
+        );
+        assert_eq!(
+            LineError::Overlong.to_string(),
+            "a line longer than 1048576 bytes"
+        );
     }
 
     #[test]
