@@ -47,9 +47,11 @@ const LCD: &str =
 /// Runs smectl with `args` against `fake`; returns its output and the lines it sent after its
 /// `hello`.
 fn run(name: &str, fake: Fake, args: &[&str]) -> (Output, Vec<Value>) {
-    let socket = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("smectl-{name}.sock"));
+    // In the system's temp dir, not the target dir: a socket path has at most 108 bytes.
+    let socket = std::env::temp_dir().join(format!("smectl-{}-{name}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket).unwrap();
+    let path = socket.clone();
     let server = std::thread::spawn(move || {
         // A smectl that never connects: fail, not hang.
         listener.set_nonblocking(true).unwrap();
@@ -57,13 +59,19 @@ fn run(name: &str, fake: Fake, args: &[&str]) -> (Output, Vec<Value>) {
         let mut stream = loop {
             match listener.accept() {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(start.elapsed().as_secs() < 5, "smectl did not connect");
+                    let late = start.elapsed().as_secs() >= 5;
+                    if late {
+                        std::fs::remove_file(&path).unwrap();
+                    }
+                    assert!(!late, "smectl did not connect");
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 result => break result.unwrap().0,
             }
         };
         stream.set_nonblocking(false).unwrap();
+        // Connected: the path is no longer needed, and a failing test leaves nothing behind.
+        std::fs::remove_file(&path).unwrap();
         // A smectl that waits for something the fake never sends: fail, not hang.
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -91,8 +99,15 @@ fn run(name: &str, fake: Fake, args: &[&str]) -> (Output, Vec<Value>) {
         }
         loop {
             line.clear();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                return received;
+            match reader.read_line(&mut line) {
+                Ok(0) => return received,
+                // smectl exited with lines of ours unread: the kernel resets the connection.
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                    return received;
+                }
+                result => {
+                    result.unwrap();
+                }
             }
             let message: Value = serde_json::from_str(&line).unwrap();
             let reply = (fake.answer)(&message);
