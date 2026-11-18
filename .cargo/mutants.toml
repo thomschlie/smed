@@ -14,7 +14,7 @@ exclude_globs = [
     "crates/smed/src/main.rs",
 ]
 exclude_re = [
-    # The real hidraw device and its ioctl number; the tests drive the daemon through a fake
-    # HidDevice and `find_in` on a fake sysfs.
-    'device\.rs:.*(Hidraw|hidiocsfeature| find ->| in find$)',
+    # The real hidraw device; the tests drive the daemon through a fake HidDevice and `find_in`
+    # on a fake sysfs.
+    'device\.rs:.*(Hidraw| find ->| in find$)',
 ]
