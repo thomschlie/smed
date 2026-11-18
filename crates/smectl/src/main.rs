@@ -206,3 +206,70 @@ fn next(client: &mut Client) -> Result<ServerMessage, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "smed closed the connection".into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(args: &[&str]) -> Result<Option<LcdRequest>, String> {
+        lcd_options(args)
+    }
+
+    #[test]
+    fn no_lcd_option_reads_the_settings() {
+        assert_eq!(options(&[]), Ok(None));
+    }
+
+    #[test]
+    fn each_lcd_option_alone_is_a_request() {
+        assert_eq!(
+            options(&["--brightness", "0"]),
+            Ok(Some((Some(0), None, None)))
+        );
+        assert_eq!(
+            options(&["--brightness", "100"]),
+            Ok(Some((Some(100), None, None)))
+        );
+        assert_eq!(
+            options(&["--text-size", "small"]),
+            Ok(Some((None, Some(TextSize::Small), None)))
+        );
+        assert_eq!(
+            options(&["--text-size", "large"]),
+            Ok(Some((None, Some(TextSize::Large), None)))
+        );
+        assert_eq!(
+            options(&["--theme", "dark"]),
+            Ok(Some((None, None, Some(Theme::Dark))))
+        );
+        assert_eq!(
+            options(&["--theme", "light"]),
+            Ok(Some((None, None, Some(Theme::Light))))
+        );
+        assert_eq!(
+            options(&[
+                "--theme",
+                "dark",
+                "--brightness",
+                "40",
+                "--text-size",
+                "large"
+            ]),
+            Ok(Some((Some(40), Some(TextSize::Large), Some(Theme::Dark))))
+        );
+    }
+
+    #[test]
+    fn bad_lcd_options_are_refused() {
+        let error = |args: &[&str]| options(args).unwrap_err();
+        assert_eq!(error(&["--brightness", "101"]), "brightness is 0-100");
+        assert_eq!(error(&["--brightness", "-1"]), "brightness is 0-100");
+        assert_eq!(
+            error(&["--text-size", "huge"]),
+            "text size is small or large"
+        );
+        assert_eq!(error(&["--theme", "blue"]), "theme is dark or light");
+        assert_eq!(error(&["--brightness"]), USAGE, "no value");
+        assert_eq!(error(&["--colour", "red"]), USAGE, "unknown option");
+    }
+}
