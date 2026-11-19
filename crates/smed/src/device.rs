@@ -222,7 +222,7 @@ mod tests {
     fn find_picks_the_enterprise_from_sysfs() {
         let root = std::env::temp_dir().join(format!("smed-find-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        // usb device 1-1 (bcdDevice) / interface 1-1:1.1 / HID device / hidraw1
+        // usb device 1-1 (bcdDevice) / interface 1-1:1.1 / HID device / hidraw2
         let usb = root.join("devices/1-1");
         let hid = usb.join("1-1:1.1/0003:256F:C633.0002");
         std::fs::create_dir_all(&hid).unwrap();
@@ -239,13 +239,25 @@ mod tests {
             "HID_ID=0003:0000046D:0000C31C\nHID_NAME=kbd\n",
         )
         .unwrap();
+        // Another 3Dconnexion device: the same vendor, another product.
+        let sibling = root.join("devices/wireless");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(
+            sibling.join("uevent"),
+            "HID_ID=0003:0000256F:0000C62E\nHID_NAME=SpaceMouse Wireless\n",
+        )
+        .unwrap();
         let class = root.join("class");
-        for (name, target) in [("hidraw0", &other), ("hidraw1", &hid)] {
+        for (name, target) in [
+            ("hidraw0", &other),
+            ("hidraw1", &sibling),
+            ("hidraw2", &hid),
+        ] {
             std::fs::create_dir_all(class.join(name)).unwrap();
             std::os::unix::fs::symlink(target, class.join(name).join("device")).unwrap();
         }
         let found = find_in(&class, Path::new("/dev")).unwrap();
-        assert_eq!(found.node, Path::new("/dev/hidraw1"));
+        assert_eq!(found.node, Path::new("/dev/hidraw2"));
         assert_eq!(found.info.name, "SpaceMouse Enterprise");
         assert_eq!(found.info.firmware.as_deref(), Some("4.42"));
         assert_eq!(
