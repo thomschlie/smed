@@ -502,6 +502,16 @@ mod tests {
     }
 
     #[test]
+    fn a_key_whose_command_left_the_catalogue_runs_nothing() {
+        let mut lcd = Lcd::default();
+        two_environments(&mut lcd);
+        lcd.focus(1, true);
+        // Key 1 stays assigned to "line" in Sketch; the new catalogue has only "box".
+        lcd.set_commands(1, App::default(), vec![command("box", "Box", None)]);
+        assert_eq!(lcd.command("1", Press::Short), None);
+    }
+
+    #[test]
     fn a_missing_icon_is_named_once() {
         let mut lcd = Lcd::default();
         lcd.connect(1, "a");

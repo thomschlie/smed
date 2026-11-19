@@ -72,8 +72,9 @@ mod tests {
     }
 
     #[test]
-    fn a_short_motion_report_is_not_motion() {
+    fn short_motion_and_legacy_reports_are_not_decoded() {
         assert_eq!(decode(&[0x01, 0x01, 0x00]), Some(Report::Other(0x01)));
+        assert_eq!(decode(&[0x03, 0x00, 0x00, 0x04]), Some(Report::Other(0x03)));
         assert_eq!(decode(&[]), None);
     }
 
