@@ -79,17 +79,25 @@ The Lock key toggles smed's rotation lock and goes out as button 27 as well.
 
 ## Motion
 
-As spacenavd 1.4 with its default settings, so that a client behaves as it does there:
+As spacenavd 1.4 sends it for this device with its default settings, so that a client behaves
+as it does there. spacenavd does not pass the device's axes on as they are:
 
-- the six axes in the device's order and signs (x right, y towards the user, z down, then the
-  rotations about them; full deflection about ±350);
-- a value below 2 is 0 (spacenavd's default dead zone);
+- each axis is scaled from the device's ±350 to ±500, in spacenavd's integer arithmetic
+  (`(v + 350) * 1000 / 700 - 500`);
+- y and z are swapped, and so are ry and rz, and the swapped y, z, ry and rz are inverted
+  (spacenavd's device table marks the Enterprise so): x right, **y up, z towards the user**,
+  rotations about those axes. This is the frame libspnav clients such as Blender expect;
+- a value below 2 is then 0 (spacenavd's default dead zone);
 - each value times the client's sensitivity (1.0 unless the client sets one), truncated;
 - `period` is the time since the device's last motion report in milliseconds.
 
-In addition, when the cap comes back to rest, smed sends one all-zero event and then nothing
-until it moves again; spacenavd sends none. While the rotation lock is on, the rotations are 0.
-smed has no axis settings of its own for spnav clients yet.
+Checked on the device: the same movements read at once from smed and from spacenavd 1.4 give
+the same values (1234 of 1268 events identical; the rest are spacenavd's partial updates, as
+evdev reports only the axes that changed).
+
+When the cap comes back to rest, smed sends one all-zero event and then nothing until it moves
+again. While the rotation lock is on, the rotations are 0. smed has no axis settings of its own
+for spnav clients yet. smed's own API keeps the device's raw axes ([api.md](api.md)).
 
 ## Next to spacenavd
 

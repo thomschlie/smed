@@ -1411,7 +1411,7 @@ mod tests {
             keys_report(0x1d, &[26]),
             keys_report(0x1d, &[]),
             motion([1, 100, -5], [0, 0, 350]),
-            motion([1, 0, 0], [0, -1, 0]),
+            motion([1, 0, 0], [0, 1, 0]),
             motion([0, 0, 0], [0, 0, 0]),
             keys_report(0x1c, &[27]),
             motion([0, 0, 9], [7, 7, 7]),
@@ -1431,13 +1431,14 @@ mod tests {
         assert_eq!(spnav_read(&mut v1), [2, 26, 0, 0, 0, 0, 0, 0]);
         // Motion past the dead zone, then one all-zero event, then nothing.
         let first = spnav_read(&mut v1);
-        assert_eq!(first[..7], [0, 0, 100, -5, 0, 0, 350]);
+        // In spacenavd's frame: scaled to ±500, y/z and ry/rz swapped and inverted.
+        assert_eq!(first[..7], [0, 0, 8, -142, 0, -500, 0]);
         assert_eq!(spnav_read(&mut v1)[..7], [0; 7]);
         // The Lock key: its button (27); with the lock on, rotation is zero.
         assert_eq!(spnav_read(&mut v1), [1, 27, 1, 0, 0, 0, 0, 0]);
         assert_eq!(
             spnav_read(&mut v1)[..7],
-            [0, 0, 0, 9, 0, 0, 0],
+            [0, 0, -12, 0, 0, 0, 0],
             "rotation locked"
         );
         assert_eq!(spnav_read(&mut v1), [2, 27, 0, 0, 0, 0, 0, 0]);
@@ -1448,7 +1449,7 @@ mod tests {
         for _ in 0..5 {
             spnav_read(&mut v0);
         }
-        assert_eq!(spnav_read(&mut v0)[..7], [0, 0, 200, -10, 0, 0, 700]);
+        assert_eq!(spnav_read(&mut v0)[..7], [0, 0, 16, -284, 0, -1000, 0]);
 
         // The API client still gets everything as before.
         assert_eq!(

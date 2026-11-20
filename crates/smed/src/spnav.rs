@@ -67,8 +67,30 @@ pub const AXES: i32 = 6;
 /// can index it with every ID it gets.
 pub const BUTTONS: i32 = 177;
 
-/// spacenavd's default dead zone: a raw axis value below this is 0.
+/// spacenavd's default dead zone: an axis value below this, after [`spacenavd_axes`], is 0.
 pub const DEADZONE: i32 = 2;
+
+/// The device's axis range: ±350 (its HID logical minimum and maximum, as evdev reports them).
+const DEVICE_RANGE: i32 = 350;
+/// spacenavd scales every axis to ±500.
+const SPNAV_RANGE: i32 = 500;
+
+/// The raw axes (x, y, z, rx, ry, rz as the device reports them) the way spacenavd 1.4 sends
+/// them for this device: each scaled from ±350 to ±500 as spacenavd does (integer arithmetic,
+/// `map_range` in `dev_usb_linux.c`), y and z swapped and so ry and rz, and the swapped y, z, ry
+/// and rz inverted (its device table marks the Enterprise `DF_SWAPYZ | DF_INVYZ`, `dev.c`), then
+/// the dead zone. libspnav clients such as Blender expect this frame: y up, z towards the user.
+pub fn spacenavd_axes(raw: [i32; 6]) -> [i32; 6] {
+    const SWAP: [usize; 6] = [0, 2, 1, 3, 5, 4];
+    let mut axes = [0_i32; 6];
+    for (index, value) in raw.into_iter().enumerate() {
+        let scaled = (value + DEVICE_RANGE) * (2 * SPNAV_RANGE) / (2 * DEVICE_RANGE) - SPNAV_RANGE;
+        let to = SWAP[index];
+        let value = if to == 0 || to == 3 { scaled } else { -scaled };
+        axes[to] = if value.abs() < DEADZONE { 0 } else { value };
+    }
+    axes
+}
 
 /// Strings go in chunks of 24 bytes (data words 0-5); the last word holds the remaining
 /// length, with this bit set on every chunk after the first.
@@ -112,8 +134,8 @@ fn words(bytes: &[u8]) -> [i32; 8] {
 /// What the daemon reports to every spnav client, before each client's mask and sensitivity.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// x, y, z, rx, ry, rz after the dead zone; `period`: ms since the device's last motion
-    /// report.
+    /// x, y, z, rx, ry, rz as spacenavd sends them ([`spacenavd_axes`]); `period`: ms since the
+    /// device's last motion report.
     Motion {
         axes: [i32; 6],
         period: i32,
@@ -159,11 +181,11 @@ impl Translator {
     pub fn event(&mut self, message: &ServerMessage, now: Instant) -> Option<Event> {
         match message {
             ServerMessage::Motion { t, r } => {
-                let mut axes = [0_i32; 6];
-                for (axis, &raw) in axes.iter_mut().zip(t.iter().chain(r)) {
-                    let raw = i32::from(raw);
-                    *axis = if raw.abs() < DEADZONE { 0 } else { raw };
+                let mut raw = [0_i32; 6];
+                for (axis, &value) in raw.iter_mut().zip(t.iter().chain(r)) {
+                    *axis = i32::from(value);
                 }
+                let axes = spacenavd_axes(raw);
                 let period = self.last_motion.map_or(0, |last| {
                     i32::try_from(now.saturating_duration_since(last).as_millis())
                         .unwrap_or(i32::MAX)
@@ -853,13 +875,14 @@ mod tests {
         assert_eq!(
             translator.event(&motion([1, -1, 2], [-2, 300, -350]), start),
             Some(Event::Motion {
-                axes: [0, 0, 2, -2, 300, -350],
+                // spacenavd's frame: scaled to ±500, y/z and ry/rz swapped and inverted.
+                axes: [0, -2, 2, -3, 500, -428],
                 period: 0
             })
         );
         assert_eq!(
             translator.event(
-                &motion([1, 0, 0], [0, -1, 0]),
+                &motion([1, 0, 0], [0, 1, 0]),
                 start + Duration::from_millis(8)
             ),
             Some(Event::Motion {
@@ -882,10 +905,40 @@ mod tests {
                 start + Duration::from_millis(40)
             ),
             Some(Event::Motion {
-                axes: [5, 0, 0, 0, 0, 0],
+                axes: [7, 0, 0, 0, 0, 0],
                 period: 24
             }),
             "the period counts from the last report, also one not sent on"
+        );
+    }
+
+    #[test]
+    fn motion_is_what_spacenavd_sends_for_the_enterprise() {
+        // Recorded 2026-11-20: the same movements of the cap read at once through smed's raw
+        // axes and through spacenavd 1.4 on evdev (Fedora 44, the device's default settings).
+        let recorded = [
+            (
+                [-58, 118, 282, 70, 183, 178],
+                [-83, -402, -168, 100, -254, -261],
+            ),
+            (
+                [-37, 206, 77, 350, 183, -22],
+                [-53, -110, -294, 500, 32, -261],
+            ),
+            ([-102, -52, 53, 22, 349, 63], [-146, -75, 75, 31, -90, -498]),
+            (
+                [-47, 147, 82, 76, 152, 161],
+                [-68, -117, -210, 108, -230, -217],
+            ),
+            ([-285, 8, 165, 0, 350, -30], [-408, -235, -11, 0, 43, -500]),
+        ];
+        for (raw, spacenavd) in recorded {
+            assert_eq!(spacenavd_axes(raw), spacenavd, "{raw:?}");
+        }
+        assert_eq!(spacenavd_axes([0; 6]), [0; 6]);
+        assert_eq!(
+            spacenavd_axes([-350, -350, -350, -350, -350, -350]),
+            [-500, 500, 500, -500, 500, 500]
         );
     }
 
