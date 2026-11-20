@@ -4,7 +4,7 @@ smed owns the SpaceMouse Enterprise and reports what it does to any number of cl
 smed's own API, the one that carries the whole device: every key by its 3Dx ID, short and long
 press, the rotation lock, and (version 2) the LCD with labels and icons from the application
 that has the focus. The spacenavd/libspnav socket for unchanged clients (Blender, FreeCAD)
-comes later and carries less.
+carries less: [spnav.md](spnav.md).
 
 Version 2 only adds to version 1: a client that says `"api":1` sees exactly what version 1
 describes. Everything marked *API 2* below is sent to, and accepted from, connections that

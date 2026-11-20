@@ -130,8 +130,8 @@ Measured [cap-keys], [cap-long]: the device decides short vs. long itself.
   every key can long-press. No 0x1c for that press at all.
 - 0x1d does **not** carry the "opposite" ID. 3DxWare (and Blender on Windows, via `Base.xml`)
   map it: T → BOTTOM 7, R → LEFT 4, F → BACK 8, Roll → ROLL_CCW 10, ISO → ISO2 12,
-  V1–V3 → SAVE_V1–V3 139–141. smed has to do this mapping to give Blender the long-press
-  functions.
+  V1–V3 → SAVE_V1–V3 139–141. smed does this mapping on its spnav socket
+  ([spnav.md](spnav.md)) to give Blender the long-press functions.
 - Holding key 1 sent nothing to the LCD or LEDs: the tile highlight/OSD is not a device
   feature visible on USB here (3DxWare shows the OSD on screen).
 

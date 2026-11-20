@@ -1,10 +1,10 @@
 //! The running daemon: the state shared between the device thread, the LCD thread and one
 //! thread per client.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use smed_client::{API_VERSION, ClientMessage, DeviceInfo, MAX_MESSAGE, ServerMessage, to_line};
@@ -16,6 +16,7 @@ use crate::frame;
 use crate::init;
 use crate::lcd::Lcd;
 use crate::render::{self, Icon};
+use crate::spnav;
 use crate::usb::{self, LcdSink};
 
 /// How long a write to a client may block before the client is dropped: a client that stops
@@ -58,12 +59,23 @@ struct State {
     lcd_sink: Option<Arc<dyn LcdSink>>,
     /// The LCD needs a new frame (and brightness).
     lcd_dirty: bool,
+    /// The clients of the spnav socket (docs/spnav.md), and what they get of the messages.
+    spnav: Vec<SpnavClient>,
+    spnav_events: spnav::Translator,
+    /// The device's hidraw node, for spnav's `DEV_PATH`.
+    device_path: Option<String>,
 }
 
 struct Client {
     id: u64,
     api: u32,
     stream: UnixStream,
+}
+
+struct SpnavClient {
+    id: u64,
+    stream: UnixStream,
+    protocol: spnav::Client,
 }
 
 impl State {
@@ -103,10 +115,41 @@ impl State {
         });
     }
 
+    /// Sends `message` to every API client, and its spnav event, if it has one, to every spnav
+    /// client; drops a client that cannot take it.
     fn broadcast(&mut self, message: &ServerMessage) {
         let line = to_line(message);
         self.clients
             .retain_mut(|client| client.stream.write_all(line.as_bytes()).is_ok());
+        if let Some(event) = self.spnav_events.event(message, Instant::now()) {
+            self.spnav.retain_mut(|client| {
+                client
+                    .protocol
+                    .encode(&event)
+                    .is_none_or(|packet| client.stream.write_all(&packet).is_ok())
+            });
+        }
+    }
+
+    /// Bytes from spnav client `id`: its answers go back. `false` when the client is gone.
+    fn spnav_bytes(&mut self, id: u64, bytes: &[u8]) -> bool {
+        let device = self.device.as_ref().map(|info| spnav::DeviceView {
+            info,
+            path: self.device_path.as_deref(),
+        });
+        let Some(client) = self.spnav.iter_mut().find(|client| client.id == id) else {
+            return false;
+        };
+        let named = client.protocol.name().is_some();
+        let answer = client.protocol.on_bytes(bytes, device);
+        if !named && let Some(name) = client.protocol.name() {
+            eprintln!("smed: spnav client {id} is {name}");
+        }
+        if answer.is_empty() || client.stream.write_all(&answer).is_ok() {
+            return true;
+        }
+        self.spnav.retain(|client| client.id != id);
+        false
     }
 
     fn state_message(&self, api: u32) -> ServerMessage {
@@ -174,12 +217,13 @@ impl Shared {
     }
 
     /// Runs `device` until it goes away: the init sequence, then every report through the core.
-    /// `lcd` is its LCD interface, if it could be claimed. Returns the read error that ended
-    /// it, or `Ok` at end of file.
+    /// `path` is its node (for spnav clients), `lcd` its LCD interface, if it could be claimed.
+    /// Returns the read error that ended it, or `Ok` at end of file.
     pub fn run_device(
         &self,
         device: Arc<dyn HidDevice>,
         info: DeviceInfo,
+        path: Option<String>,
         lcd: Option<Arc<dyn LcdSink>>,
     ) -> io::Result<()> {
         {
@@ -188,6 +232,7 @@ impl Shared {
             init::run(device.as_ref(), &led)?;
             state.handle = Some(device.clone());
             state.device = Some(info.clone());
+            state.device_path = path;
             state.lcd_sink = lcd;
             self.redraw(&mut state);
             state.broadcast(&ServerMessage::Device { device: Some(info) });
@@ -208,6 +253,7 @@ impl Shared {
         let mut state = self.state();
         state.handle = None;
         state.device = None;
+        state.device_path = None;
         state.lcd_sink = None;
         let actions = state.core.device_gone();
         state.apply(actions);
@@ -372,6 +418,50 @@ impl Shared {
         }
         drop(state);
         eprintln!("smed: client {id} ({name}) disconnected");
+        result
+    }
+
+    /// Serves one client of the spnav socket (docs/spnav.md) until it disconnects.
+    pub fn serve_spnav(&self, stream: UnixStream) -> io::Result<()> {
+        stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))?;
+        let mut reader = stream.try_clone()?;
+        let id = {
+            let mut state = self.state();
+            state.next_client += 1;
+            let id = state.next_client;
+            state.spnav.push(SpnavClient {
+                id,
+                stream,
+                protocol: spnav::Client::new(),
+            });
+            id
+        };
+        eprintln!("smed: spnav client {id} connected");
+        let mut buf = [0_u8; 4 * spnav::PACKET];
+        let result = loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break Ok(()),
+                Ok(len) => {
+                    if !self.state().spnav_bytes(id, &buf[..len]) {
+                        break Ok(());
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => break Err(error),
+            }
+        };
+        let mut state = self.state();
+        let name = state
+            .spnav
+            .iter()
+            .find(|client| client.id == id)
+            .and_then(|client| client.protocol.name().map(str::to_owned));
+        state.spnav.retain(|client| client.id != id);
+        drop(state);
+        match name {
+            Some(name) => eprintln!("smed: spnav client {id} ({name}) disconnected"),
+            None => eprintln!("smed: spnav client {id} disconnected"),
+        }
         result
     }
 
@@ -614,7 +704,9 @@ mod tests {
             lock,
             vec![0x01, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0],
         ]));
-        shared.run_device(device.clone(), info(), None).unwrap();
+        shared
+            .run_device(device.clone(), info(), None, None)
+            .unwrap();
 
         assert_eq!(
             read(&mut reader),
@@ -976,7 +1068,9 @@ mod tests {
             Err(io::Error::from(io::ErrorKind::Interrupted)),
             Ok(keys_report(0x1c, &[27])),
         ]);
-        shared.run_device(device.clone(), info(), None).unwrap();
+        shared
+            .run_device(device.clone(), info(), None, None)
+            .unwrap();
         assert_eq!(
             device.left(),
             0,
@@ -991,7 +1085,9 @@ mod tests {
             Err(io::Error::other("unplugged")),
             Ok(keys_report(0x1c, &[27])),
         ]);
-        let error = shared.run_device(device.clone(), info(), None).unwrap_err();
+        let error = shared
+            .run_device(device.clone(), info(), None, None)
+            .unwrap_err();
         assert_eq!(error.to_string(), "unplugged");
         assert_eq!(device.left(), 1, "nothing read after the error");
         assert_eq!(shared.state().device, None);
@@ -1133,7 +1229,7 @@ mod tests {
             keys_report(0x1d, &[13]),
             keys_report(0x1d, &[]),
         ]));
-        shared.run_device(device, info(), None).unwrap();
+        shared.run_device(device, info(), None, None).unwrap();
 
         let command = |press| ServerMessage::Command {
             id: "box".into(),
@@ -1220,5 +1316,203 @@ mod tests {
             page.tiles[1].is_none(),
             "the unknown command's key is empty"
         );
+    }
+
+    /// A spnav client on a socket pair, served by a thread.
+    fn spnav_connect(shared: &Arc<Shared>) -> UnixStream {
+        let (client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let shared = shared.clone();
+        std::thread::spawn(move || shared.serve_spnav(server));
+        client
+    }
+
+    /// Waits until `count` spnav clients are registered (a v0 client gets no answer to wait for).
+    fn spnav_clients(shared: &Arc<Shared>, count: usize) {
+        let start = Instant::now();
+        while shared.state().spnav.len() != count {
+            assert!(start.elapsed() < Duration::from_secs(5), "spnav clients");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn spnav_packet(words: [i32; 8]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_ne_bytes()).collect()
+    }
+
+    fn spnav_read(client: &mut UnixStream) -> [i32; 8] {
+        let mut bytes = [0_u8; 32];
+        client.read_exact(&mut bytes).unwrap();
+        let mut words = [0_i32; 8];
+        for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *word = i32::from_ne_bytes(*chunk);
+        }
+        words
+    }
+
+    const TAG: i32 = 0x7faa_0000;
+
+    /// The protocol change to v1, as libspnav's `spnav_open` sends it.
+    fn spnav_v1(client: &mut UnixStream) {
+        client.write_all(&(TAG | 0x5501).to_ne_bytes()).unwrap();
+        let mut answer = [0_u8; 4];
+        client.read_exact(&mut answer).unwrap();
+        assert_eq!(i32::from_ne_bytes(answer), TAG | 0x5501);
+    }
+
+    #[test]
+    fn spnav_clients_get_keys_by_3dx_id_long_presses_motion_and_the_device() {
+        let shared = Shared::new();
+        let (_api, mut api_reader) = hello(&shared, 1, "api");
+        let mut v1 = spnav_connect(&shared);
+        spnav_v1(&mut v1);
+        // spnav_client_name("blender"): no answer.
+        let name = [
+            0x1000,
+            i32::from_ne_bytes(*b"blen"),
+            i32::from_ne_bytes(*b"der\0"),
+            0,
+            0,
+            0,
+            0,
+            7,
+        ];
+        v1.write_all(&spnav_packet(name)).unwrap();
+        // Without a device, DEV_NAME fails; the answer also shows the name was taken in.
+        v1.write_all(&spnav_packet([TAG | 0x2000, 0, 0, 0, 0, 0, 0, 0]))
+            .unwrap();
+        assert_eq!(spnav_read(&mut v1), [TAG | 0x2000, 0, 0, 0, 0, 0, 0, -1]);
+        let mut v0 = spnav_connect(&shared);
+        // A v0 client sends its sensitivity as a float, no answer.
+        v0.write_all(&2.0_f32.to_ne_bytes()).unwrap();
+        spnav_clients(&shared, 2);
+        let start = Instant::now();
+        while shared.state().spnav[1].protocol.sensitivity() != 2.0 {
+            assert!(start.elapsed() < Duration::from_secs(5), "v0 sensitivity");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(shared.state().spnav[0].protocol.name(), Some("blender"));
+
+        let motion = |t: [i16; 3], r: [i16; 3]| {
+            let mut report = vec![0x01];
+            for axis in t.iter().chain(&r) {
+                report.extend_from_slice(&axis.to_le_bytes());
+            }
+            report
+        };
+        let device = Arc::new(Fake::with_reports([
+            keys_report(0x1c, &[3]),
+            keys_report(0x1c, &[]),
+            keys_report(0x1d, &[3]),
+            keys_report(0x1c, &[]),
+            keys_report(0x1d, &[]),
+            keys_report(0x1d, &[26]),
+            keys_report(0x1d, &[]),
+            motion([1, 100, -5], [0, 0, 350]),
+            motion([1, 0, 0], [0, -1, 0]),
+            motion([0, 0, 0], [0, 0, 0]),
+            keys_report(0x1c, &[27]),
+            motion([0, 0, 9], [7, 7, 7]),
+            keys_report(0x1c, &[]),
+        ]));
+        shared
+            .run_device(device, info(), Some("/dev/hidraw7".into()), None)
+            .unwrap();
+
+        // The v1 client: the device, T short, T long as Bottom (7), Ctrl long held as Ctrl.
+        assert_eq!(spnav_read(&mut v1), [3, 0, 0, 0x20e, 0x256f, 0xc633, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [1, 3, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [2, 3, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [1, 7, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [2, 7, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [1, 26, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [2, 26, 0, 0, 0, 0, 0, 0]);
+        // Motion past the dead zone, then one all-zero event, then nothing.
+        let first = spnav_read(&mut v1);
+        assert_eq!(first[..7], [0, 0, 100, -5, 0, 0, 350]);
+        assert_eq!(spnav_read(&mut v1)[..7], [0; 7]);
+        // The Lock key: its button (27); with the lock on, rotation is zero.
+        assert_eq!(spnav_read(&mut v1), [1, 27, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            spnav_read(&mut v1)[..7],
+            [0, 0, 0, 9, 0, 0, 0],
+            "rotation locked"
+        );
+        assert_eq!(spnav_read(&mut v1), [2, 27, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(spnav_read(&mut v1), [3, 1, 0, 0x20e, 0x256f, 0xc633, 0, 0]);
+
+        // The v0 client: no device events, motion times its sensitivity 2.
+        assert_eq!(spnav_read(&mut v0), [1, 3, 1, 0, 0, 0, 0, 0]);
+        for _ in 0..5 {
+            spnav_read(&mut v0);
+        }
+        assert_eq!(spnav_read(&mut v0)[..7], [0, 0, 200, -10, 0, 0, 700]);
+
+        // The API client still gets everything as before.
+        assert_eq!(
+            read(&mut api_reader),
+            ServerMessage::Device {
+                device: Some(info())
+            }
+        );
+        assert_eq!(read(&mut api_reader), key("t", 3, true));
+    }
+
+    #[test]
+    fn spnav_device_requests_name_the_device_and_its_node() {
+        let shared = Shared::new();
+        {
+            let mut state = shared.state();
+            state.device = Some(info());
+            state.device_path = Some("/dev/hidraw7".into());
+        }
+        let mut client = spnav_connect(&shared);
+        spnav_v1(&mut client);
+        client
+            .write_all(&spnav_packet([TAG | 0x2001, 0, 0, 0, 0, 0, 0, 0]))
+            .unwrap();
+        let path = spnav_read(&mut client);
+        assert_eq!((path[0], path[7]), (TAG | 0x2001, 12));
+        let bytes = spnav_packet(path);
+        assert_eq!(&bytes[4..16], b"/dev/hidraw7");
+        client
+            .write_all(&spnav_packet([TAG | 0x2003, 0, 0, 0, 0, 0, 0, 0]))
+            .unwrap();
+        assert_eq!(
+            spnav_read(&mut client),
+            [TAG | 0x2003, 177, 0, 0, 0, 0, 0, 0]
+        );
+        // A configuration request fails and the connection stays.
+        client
+            .write_all(&spnav_packet([TAG | 0x3000, 0, 0, 0, 0, 0, 0, 0]))
+            .unwrap();
+        assert_eq!(spnav_read(&mut client)[7], -1);
+        client
+            .write_all(&spnav_packet([TAG | 0x2002, 0, 0, 0, 0, 0, 0, 0]))
+            .unwrap();
+        assert_eq!(spnav_read(&mut client), [TAG | 0x2002, 6, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_spnav_client_that_goes_is_dropped() {
+        let shared = Shared::new();
+        let client = spnav_connect(&shared);
+        spnav_clients(&shared, 1);
+        drop(client);
+        spnav_clients(&shared, 0);
+        // A client that stops reading is dropped at a failed write, not waited for.
+        let mut gone = spnav_connect(&shared);
+        spnav_v1(&mut gone);
+        gone.shutdown(std::net::Shutdown::Read).unwrap();
+        spnav_clients(&shared, 1);
+        let device = Arc::new(Fake::with_reports([keys_report(0x1c, &[3])]));
+        shared.run_device(device, info(), None, None).unwrap();
+        assert!(
+            shared.state().spnav.is_empty(),
+            "dropped at the failed write"
+        );
+        drop(gone);
     }
 }

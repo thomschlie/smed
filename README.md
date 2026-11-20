@@ -7,9 +7,9 @@ the LCD with labels and icons from the application in use.
 > **Status: early (0.2, in development).** smed reads the device and reports all of it to
 > clients over its own API: the six axes, all 31 keys by their 3Dconnexion IDs with short and
 > long press, and the rotation lock with its LED. It draws the LCD from the labels and icons
-> the focused client sends and calls it back with the command of a key (API 2). Not yet: the
-> spacenavd socket for unchanged clients (Blender, FreeCAD), keyboard keys as real key
-> presses, window-focus detection.
+> the focused client sends and calls it back with the command of a key (API 2). It also serves
+> the spacenavd/libspnav socket, so Blender and FreeCAD work unchanged. Not yet: keyboard keys
+> as real key presses, window-focus detection, axis settings for libspnav clients.
 
 Not affiliated with or endorsed by 3Dconnexion. "3Dconnexion" and "SpaceMouse" are trademarks
 of their owner and are used here only to name the hardware.
@@ -35,6 +35,10 @@ Long presses (HID report `0x1d`), the rotation-lock LED and the LCD are not hand
   keys 1–12 runs per environment; smed shows them as 12 tiles over the keys and sends the
   client the command when such a key is pressed. Brightness,
   text size and a dark or light theme are smed's settings.
+- Serves the spacenavd/libspnav socket at `$XDG_RUNTIME_DIR/spnav.sock`
+  ([docs/spnav.md](docs/spnav.md)) for programs built on libspnav (Blender, FreeCAD): motion
+  as spacenavd sends it, every key by its 3Dconnexion ID (what Blender expects), and the long
+  presses as 3DxWare maps them (T long is Bottom, V1 long saves view 1, …).
 - Attaches no meaning to keys: what a key does is the application's choice.
 
 ![The LCD as smed draws it: smectl demo-page, captured with smectl screenshot](docs/lcd-demo.png)
@@ -66,6 +70,10 @@ sed 's|^ExecStart=/usr/bin/smed|ExecStart=%h/.local/bin/smed|' dist/smed.service
 systemctl --user daemon-reload
 systemctl --user enable --now smed
 
+# libspnav clients (Blender, FreeCAD) find smed's spnav socket from the next login
+mkdir -p ~/.config/environment.d
+install -m 644 dist/environment.d/smed.conf ~/.config/environment.d/
+
 smectl monitor    # every event as a JSON line
 smectl lcd --brightness 60 --theme light   # until smed restarts
 smectl demo-page  # a sample page on the LCD while it runs
@@ -80,23 +88,28 @@ Settings that last go in `~/.config/smed/config.toml` (read at start, never writ
 brightness = 100      # 0-100
 text_size = "small"   # or "large"
 theme = "light"       # or "dark"
+
+[spnav]
+enabled = true        # false: no spacenavd/libspnav socket (then remove smed.conf too)
 ```
 
 smed and spacenavd should not both run: stop spacenavd while smed is in use
-(`sudo systemctl disable --now spacenavd`).
+(`sudo systemctl disable --now spacenavd`). smed warns in its log when it sees spacenavd.
 
 ## Clients
 
 - [SolidCraft](https://github.com/tangency-labs/solidcraft): a backend for smed is in
   preparation (all keys, long-press jobs, the lock; the LCD next).
+- [Blender](https://www.blender.org), FreeCAD and other libspnav programs: through the spnav
+  socket, unchanged ([docs/spnav.md](docs/spnav.md)). `tools/spnav-check.py` checks it through
+  the system's libspnav.
 - Your own: speak the JSON lines from [docs/api.md](docs/api.md) directly, or use the
   `smed-client` crate.
 
 ## Plans
 
-1. The spacenavd/libspnav socket with 3Dconnexion button IDs, so Blender and FreeCAD work
-   unchanged; window-focus detection; keyboard keys (Esc, Ctrl, …) as real key presses for
-   the focused window.
+1. Window-focus detection; keyboard keys (Esc, Ctrl, …) as real key presses for the focused
+   window; axis settings (dead zone, speed, inversion) per program for libspnav clients.
 2. An on-screen display, radial menus, macros, a settings tool with your own key assignments.
 
 ## Development
@@ -119,7 +132,7 @@ its reason.
 ## Licence
 
 `MIT OR Apache-2.0` ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)). No
-spacenavd (GPL) code is used, only its documented socket protocol.
+spacenavd (GPL) or libspnav code is used, only their socket protocol.
 
 The daemon embeds the Noto Sans font (Regular, SemiBold) for the LCD, under the SIL Open Font
 License 1.1: [crates/smed/fonts/OFL.txt](crates/smed/fonts/OFL.txt).
