@@ -533,6 +533,22 @@ mod tests {
     }
 
     #[test]
+    fn a_client_asking_for_v0_stays_at_v0() {
+        let mut client = Client::new();
+        let answer = client.on_bytes(&(REQ_TAG | REQ_CHANGE_PROTO).to_ne_bytes(), None);
+        assert_eq!(answer, (REQ_TAG | REQ_CHANGE_PROTO).to_ne_bytes());
+        assert_eq!(client.proto(), 0);
+        assert_eq!(
+            client.evmask,
+            EVMASK_MOTION | EVMASK_BUTTON,
+            "no device events"
+        );
+        // Still v0: the next word is a sensitivity, not a request.
+        assert!(client.on_bytes(&0.5_f32.to_ne_bytes(), None).is_empty());
+        assert_eq!(client.sensitivity(), 0.5);
+    }
+
+    #[test]
     fn a_v0_client_sets_its_sensitivity_with_a_float() {
         let mut client = Client::new();
         // libspnav without an answer to the protocol change sends 1.0; later values count.
@@ -658,6 +674,22 @@ mod tests {
         let stray = [REQ_SET_NAME, 0x41414141, 0, 0, 0, 0, 0, 4 | CONT_BIT];
         assert!(client.on_bytes(&packet(stray), None).is_empty());
         assert_eq!(client.name(), None);
+        // A continuation whose remaining length does not follow from the start: dropped too.
+        let start = [REQ_SET_NAME, 0x41414141, 0, 0, 0, 0, 0, 30];
+        let wrong = [REQ_SET_NAME, 0x42424242, 0, 0, 0, 0, 0, 5 | CONT_BIT];
+        client.on_bytes(&packet(start), None);
+        client.on_bytes(&packet(wrong), None);
+        assert_eq!(client.name(), None);
+        // A negative length is no name.
+        client.on_bytes(&packet([REQ_SET_NAME, 0x41414141, 0, 0, 0, 0, 0, -4]), None);
+        assert_eq!(client.name(), None);
+    }
+
+    #[test]
+    fn an_empty_name_is_a_name() {
+        let mut client = v1();
+        client.on_bytes(&packet([REQ_SET_NAME, 0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(client.name(), Some(""));
     }
 
     #[test]
@@ -686,6 +718,14 @@ mod tests {
             period: 0,
         };
         assert_eq!(client.encode(&motion), None, "motion masked out");
+        client.on_bytes(&request(REQ_SET_EVMASK, [0x01, 0, 0, 0, 0, 0]), None);
+        let button = Event::Button {
+            bnum: 3,
+            press: true,
+        };
+        assert_eq!(client.encode(&button), None, "buttons masked out");
+        assert!(client.encode(&motion).is_some());
+        client.on_bytes(&request(REQ_SET_EVMASK, [0x02, 0, 0, 0, 0, 0]), None);
         assert!(
             client
                 .encode(&Event::Button {

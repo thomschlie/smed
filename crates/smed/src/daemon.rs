@@ -1496,6 +1496,20 @@ mod tests {
     }
 
     #[test]
+    fn a_spnav_client_whose_answer_cannot_be_written_is_dropped_alone() {
+        let shared = Shared::new();
+        let mut stays = spnav_connect(&shared);
+        spnav_v1(&mut stays);
+        let mut deaf = spnav_connect(&shared);
+        spnav_v1(&mut deaf);
+        deaf.shutdown(std::net::Shutdown::Read).unwrap();
+        deaf.write_all(&spnav_packet([TAG | 0x2002, 0, 0, 0, 0, 0, 0, 0]))
+            .unwrap();
+        spnav_clients(&shared, 1);
+        assert_eq!(shared.state().spnav[0].id, 1, "the other client stays");
+    }
+
+    #[test]
     fn a_spnav_client_that_goes_is_dropped() {
         let shared = Shared::new();
         let client = spnav_connect(&shared);
