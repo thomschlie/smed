@@ -15,11 +15,10 @@ use smed::usb::{LcdSink, UsbLcd};
 /// How often smed looks for the device while it is absent.
 const RESCAN: Duration = Duration::from_secs(1);
 
-const USAGE: &str = "usage: smed [--socket PATH] [--spnav-socket PATH] [--config PATH]\n\
-                     Listens on $XDG_RUNTIME_DIR/smed/api.sock unless --socket is given, and\n\
-                     on $XDG_RUNTIME_DIR/spnav.sock (libspnav clients) unless --spnav-socket\n\
-                     is given or the config switches it off; reads\n\
-                     $XDG_CONFIG_HOME/smed/config.toml unless --config is given.";
+const USAGE: &str = "usage: smed [--socket PATH] [--config PATH]\n\
+                     Listens on $XDG_RUNTIME_DIR/smed/api.sock unless --socket is given, and on\n\
+                     $XDG_RUNTIME_DIR/spnav.sock (libspnav clients) unless the config switches\n\
+                     it off; reads $XDG_CONFIG_HOME/smed/config.toml unless --config is given.";
 
 fn main() {
     if let Err(message) = run() {
@@ -30,13 +29,11 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut socket = None;
-    let mut spnav_socket = None;
     let mut config_path = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
-            "--spnav-socket" => spnav_socket = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "--config" => config_path = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "--version" => {
                 println!("smed {}", env!("CARGO_PKG_VERSION"));
@@ -69,9 +66,18 @@ fn run() -> Result<(), String> {
         None => Config::default(),
     };
 
+    let signs = spnav::spacenavd_signs(Path::new(spnav::SPACENAVD_SOCKET), Path::new("/proc"));
+    if !signs.is_empty() {
+        eprintln!(
+            "smed: warning: spacenavd seems to run as well ({}): it reads the device too; \
+             stop it with `sudo systemctl disable --now spacenavd`",
+            signs.join(", ")
+        );
+    }
+
     let shared = Shared::with_settings(config.lcd);
     if config.spnav.enabled {
-        serve_spnav(&shared, spnav_socket);
+        serve_spnav(&shared);
     } else {
         eprintln!("smed: spnav socket switched off in the config");
     }
@@ -93,20 +99,11 @@ fn run() -> Result<(), String> {
 
 /// Listens on the spnav socket, if it can, for libspnav clients. A failure costs only the
 /// spnav clients: smed warns and goes on.
-fn serve_spnav(shared: &Arc<Shared>, socket: Option<PathBuf>) {
-    let signs = spnav::spacenavd_signs(Path::new(spnav::SPACENAVD_SOCKET), Path::new("/proc"));
-    if !signs.is_empty() {
-        eprintln!(
-            "smed: warning: spacenavd seems to run as well ({}): it reads the device too; \
-             stop it with `sudo systemctl disable --now spacenavd`",
-            signs.join(", ")
-        );
-    }
-    let Some(socket) = socket.or_else(|| {
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .filter(|dir| !dir.is_empty())
-            .map(|dir| PathBuf::from(dir).join(spnav::SOCKET_IN_RUNTIME_DIR))
-    }) else {
+fn serve_spnav(shared: &Arc<Shared>) {
+    let Some(socket) = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir).join(spnav::SOCKET_IN_RUNTIME_DIR))
+    else {
         eprintln!("smed: warning: XDG_RUNTIME_DIR is not set, no spnav socket");
         return;
     };

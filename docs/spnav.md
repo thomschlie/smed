@@ -12,7 +12,7 @@ documented behaviour; no code of either is used.
 ## Where
 
 - smed listens on `$XDG_RUNTIME_DIR/spnav.sock` (normally `/run/user/<uid>/spnav.sock`), per
-  user like its API socket. `smed --spnav-socket PATH` listens elsewhere.
+  user like its API socket.
 - libspnav 1.2 and Blender look in `$SPNAV_SOCKET`, then at `socket =` in `/etc/spnavrc`, then
   at `/var/run/spnav.sock` (spacenavd's). `dist/environment.d/smed.conf` sets
   `SPNAV_SOCKET=${XDG_RUNTIME_DIR}/spnav.sock` for the whole session: install it to
@@ -85,7 +85,7 @@ As spacenavd 1.4 with its default settings, so that a client behaves as it does 
   rotations about them; full deflection about ±350);
 - a value below 2 is 0 (spacenavd's default dead zone);
 - each value times the client's sensitivity (1.0 unless the client sets one), truncated;
-- `period` is the time since the last motion event in milliseconds.
+- `period` is the time since the device's last motion report in milliseconds.
 
 In addition, when the cap comes back to rest, smed sends one all-zero event and then nothing
 until it moves again; spacenavd sends none. While the rotation lock is on, the rotations are 0.

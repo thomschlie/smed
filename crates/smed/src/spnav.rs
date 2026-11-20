@@ -112,7 +112,8 @@ fn words(bytes: &[u8]) -> [i32; 8] {
 /// What the daemon reports to every spnav client, before each client's mask and sensitivity.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// x, y, z, rx, ry, rz after the dead zone; `period`: ms since the last motion event.
+    /// x, y, z, rx, ry, rz after the dead zone; `period`: ms since the device's last motion
+    /// report.
     Motion {
         axes: [i32; 6],
         period: i32,
@@ -134,6 +135,7 @@ pub enum Event {
 #[derive(Debug)]
 pub struct Translator {
     at_rest: bool,
+    /// When the last motion report came, sent on or not.
     last_motion: Option<Instant>,
     device: Option<(u16, u16)>,
 }
@@ -162,16 +164,16 @@ impl Translator {
                     let raw = i32::from(raw);
                     *axis = if raw.abs() < DEADZONE { 0 } else { raw };
                 }
-                let rest = axes == [0; 6];
-                if rest && self.at_rest {
-                    return None;
-                }
-                self.at_rest = rest;
                 let period = self.last_motion.map_or(0, |last| {
                     i32::try_from(now.saturating_duration_since(last).as_millis())
                         .unwrap_or(i32::MAX)
                 });
                 self.last_motion = Some(now);
+                let rest = axes == [0; 6];
+                if rest && self.at_rest {
+                    return None;
+                }
+                self.at_rest = rest;
                 Some(Event::Motion { axes, period })
             }
             ServerMessage::Key {
@@ -881,8 +883,9 @@ mod tests {
             ),
             Some(Event::Motion {
                 axes: [5, 0, 0, 0, 0, 0],
-                period: 32
-            })
+                period: 24
+            }),
+            "the period counts from the last report, also one not sent on"
         );
     }
 
