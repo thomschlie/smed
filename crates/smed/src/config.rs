@@ -6,6 +6,9 @@
 //! brightness = 100      # 0-100
 //! text_size = "small"   # or "large"
 //! theme = "light"       # or "dark"
+//!
+//! [spnav]
+//! enabled = true        # false: no spacenavd/libspnav socket (docs/spnav.md)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -35,10 +38,25 @@ impl Default for LcdSettings {
 /// Feature report 0x11 takes 0-100 (docs/protocol.md).
 pub const MAX_BRIGHTNESS: u8 = 100;
 
+/// The spacenavd/libspnav socket (docs/spnav.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpnavSettings {
+    /// Serve `$XDG_RUNTIME_DIR/spnav.sock`; on unless set to `false`.
+    pub enabled: bool,
+}
+
+impl Default for SpnavSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub lcd: LcdSettings,
+    pub spnav: SpnavSettings,
 }
 
 impl Config {
@@ -109,6 +127,24 @@ mod tests {
                 .brightness,
             40
         );
+    }
+
+    #[test]
+    fn the_spnav_socket_is_on_unless_switched_off() {
+        assert!(Config::default().spnav.enabled);
+        assert!(
+            Config::parse("[lcd]\nbrightness = 40\n")
+                .unwrap()
+                .spnav
+                .enabled
+        );
+        assert!(
+            !Config::parse("[spnav]\nenabled = false\n")
+                .unwrap()
+                .spnav
+                .enabled
+        );
+        assert!(Config::parse("[spnav]\nenable = false\n").is_err());
     }
 
     #[test]

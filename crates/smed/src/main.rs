@@ -9,14 +9,16 @@ use std::time::Duration;
 use smed::config::{self, Config};
 use smed::daemon::Shared;
 use smed::device::{self, Hidraw};
+use smed::spnav;
 use smed::usb::{LcdSink, UsbLcd};
 
 /// How often smed looks for the device while it is absent.
 const RESCAN: Duration = Duration::from_secs(1);
 
 const USAGE: &str = "usage: smed [--socket PATH] [--config PATH]\n\
-                     Listens on $XDG_RUNTIME_DIR/smed/api.sock unless --socket is given;\n\
-                     reads $XDG_CONFIG_HOME/smed/config.toml unless --config is given.";
+                     Listens on $XDG_RUNTIME_DIR/smed/api.sock unless --socket is given, and on\n\
+                     $XDG_RUNTIME_DIR/spnav.sock (libspnav clients) unless the config switches\n\
+                     it off; reads $XDG_CONFIG_HOME/smed/config.toml unless --config is given.";
 
 fn main() {
     if let Err(message) = run() {
@@ -64,7 +66,21 @@ fn run() -> Result<(), String> {
         None => Config::default(),
     };
 
+    let signs = spnav::spacenavd_signs(Path::new(spnav::SPACENAVD_SOCKET), Path::new("/proc"));
+    if !signs.is_empty() {
+        eprintln!(
+            "smed: warning: spacenavd seems to run as well ({}): it reads the device too; \
+             stop it with `sudo systemctl disable --now spacenavd`",
+            signs.join(", ")
+        );
+    }
+
     let shared = Shared::with_settings(config.lcd);
+    if config.spnav.enabled {
+        serve_spnav(&shared);
+    } else {
+        eprintln!("smed: spnav socket switched off in the config");
+    }
     let drawing = shared.clone();
     std::thread::spawn(move || drawing.run_lcd());
     let accepting = shared.clone();
@@ -81,8 +97,39 @@ fn run() -> Result<(), String> {
     run_devices(&shared)
 }
 
+/// Listens on the spnav socket, if it can, for libspnav clients. A failure costs only the
+/// spnav clients: smed warns and goes on.
+fn serve_spnav(shared: &Arc<Shared>) {
+    let Some(socket) = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir).join(spnav::SOCKET_IN_RUNTIME_DIR))
+    else {
+        eprintln!("smed: warning: XDG_RUNTIME_DIR is not set, no spnav socket");
+        return;
+    };
+    let listener = match listen(&socket) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("smed: warning: no spnav socket: {error}");
+            return;
+        }
+    };
+    eprintln!("smed: spnav socket on {}", socket.display());
+    let shared = shared.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                if let Err(error) = shared.serve_spnav(stream) {
+                    eprintln!("smed: spnav client: {error}");
+                }
+            });
+        }
+    });
+}
+
 /// Binds the socket, creating its directory (0700) and replacing a stale socket from a smed
-/// that did not shut down cleanly. A socket someone answers on is another smed: an error.
+/// that did not shut down cleanly. A socket someone answers on is another daemon: an error.
 fn listen(socket: &Path) -> Result<UnixListener, String> {
     if let Some(dir) = socket.parent() {
         std::fs::DirBuilder::new()
@@ -96,7 +143,7 @@ fn listen(socket: &Path) -> Result<UnixListener, String> {
             return Err(format!("{} exists and is not a socket", socket.display()));
         }
         if UnixStream::connect(socket).is_ok() {
-            return Err(format!("another smed listens on {}", socket.display()));
+            return Err(format!("another daemon listens on {}", socket.display()));
         }
         std::fs::remove_file(socket).map_err(|e| format!("removing {}: {e}", socket.display()))?;
     }
@@ -125,7 +172,8 @@ fn run_devices(shared: &Arc<Shared>) -> Result<(), String> {
                     found.info.firmware.as_deref().unwrap_or("unknown")
                 );
                 let lcd = open_lcd(found.usb.as_deref());
-                match shared.run_device(Arc::new(hidraw), found.info, lcd) {
+                let path = Some(node.clone());
+                match shared.run_device(Arc::new(hidraw), found.info, path, lcd) {
                     Ok(()) => eprintln!("smed: {node} closed"),
                     Err(error) => eprintln!("smed: {node}: {error}"),
                 }
