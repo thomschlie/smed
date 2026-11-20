@@ -92,8 +92,8 @@ as it does there. spacenavd does not pass the device's axes on as they are:
 - `period` is the time since the device's last motion report in milliseconds.
 
 Checked on the device: the same movements read at once from smed and from spacenavd 1.4 give
-the same values (1234 of 1268 events identical; the rest are spacenavd's partial updates, as
-evdev reports only the axes that changed).
+the same values (1901 of 1901 spacenavd motion events came unchanged from smed; smed sends a
+few more, one per device report, where evdev reports only the axes that changed).
 
 When the cap comes back to rest, smed sends one all-zero event and then nothing until it moves
 again. While the rotation lock is on, the rotations are 0. smed has no axis settings of its own
