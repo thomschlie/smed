@@ -1,5 +1,7 @@
 //! smectl: command-line client for smed (docs/api.md).
 
+#![forbid(unsafe_code)]
+
 mod demo;
 
 use std::path::PathBuf;
