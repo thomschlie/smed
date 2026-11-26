@@ -3,6 +3,10 @@
 All notable changes to `smed-client`. The crate follows [Semantic Versioning](https://semver.org/);
 as long as the major version is 0, a new minor version (0.x) may break code.
 
+## Unreleased
+
+- The crate forbids unsafe code (`#![forbid(unsafe_code)]`); it never had any.
+
 ## 0.2.0 (2026-11-18)
 
 API 2 of smed: an application puts its commands on keys 1–12 and the device's LCD. The JSON lines

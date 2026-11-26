@@ -65,6 +65,8 @@
 //! };
 //! ```
 
+#![forbid(unsafe_code)]
+
 // The README's examples are compiled as doctests too, so they cannot drift from the API.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
